@@ -22,8 +22,9 @@ struct Definition {
     callable: bool,
     /// `module::path::name` when the definition is a test.
     test: Option<String>,
-    /// File and one-based first and last line. `None` for generated code,
-    /// which owns no line of any file.
+    /// File and one-based first and last line. For generated code, the lines
+    /// of the macro call that generated it; `None` when even that is not in
+    /// a file.
     place: Option<(String, usize, usize)>,
 }
 
@@ -187,7 +188,12 @@ impl<'tcx> Collector<'tcx> {
         }
 
         let hir_id = tcx.local_def_id_to_hir_id(def_id);
-        let span = tcx.hir_span_with_body(hir_id);
+        // An item a macro wrote has no text of its own, but the macro call
+        // it came from does: the function under `#[tokio::test]` or
+        // `#[async_trait]`, the name in a `#[derive(...)]`, a `macro_rules!`
+        // invocation. A change there is a change to what the macro
+        // generated. Several generated items can share one such range.
+        let span = tcx.hir_span_with_body(hir_id).source_callsite();
         let place = (!span.from_expansion()).then(|| self.lines(hir_id, span)).flatten();
         let path = tcx.def_path(global).to_string_no_crate_verbose();
         let test = is_test_descriptor(tcx, def_id, kind)

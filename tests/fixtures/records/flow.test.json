@@ -2,9 +2,9 @@
 "package":"fx-auth",
 "record_ms":0,
 "definitions":[
-{"id":"flow::sign_up_flow","name":"sign_up_flow","callable":false,"test":"sign_up_flow"},
+{"id":"flow::sign_up_flow","name":"sign_up_flow","callable":false,"test":"sign_up_flow","file":"auth/tests/flow.rs","first_line":3,"last_line":3},
 {"id":"flow::sign_up_flow#1","name":"sign_up_flow#1","callable":true,"file":"auth/tests/flow.rs","first_line":4,"last_line":6},
-{"id":"flow::main","name":"main","callable":true}
+{"id":"flow::main","name":"main","callable":true,"file":"auth/tests/flow.rs","first_line":1,"last_line":1}
 ],
 "mentions":[
 {"file":"auth/tests/flow.rs","line":4,"column":0,"to":"flow::sign_up_flow#1","callable":true},

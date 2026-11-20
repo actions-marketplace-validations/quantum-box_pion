@@ -35,18 +35,23 @@ history of full test runs. Keep running every test somewhere (see
 [Checking the selection](#checking-the-selection)) and do not gate a release
 on pion alone.
 
-Measured on a workspace of 172 crates and about 17,000 tests, by asking what
+Measured on a workspace of 172 crates and about 16,000 tests, by asking what
 a change to each of 300 random lines of code would select:
 
-| | |
-| --- | --- |
-| Changes that could be narrowed | 295 of 300 |
-| Tests selected for a change in non-test code | median 6, 75th percentile 77, 90th percentile 347, worst case about 5,000 |
-| Crates the crate-level plan would run in full | median 6 |
-| API scenarios selected | median 46 of 178 |
+| | rust-analyzer index | compiler records |
+| --- | --- | --- |
+| Changes that could be narrowed | 295 of 300 | 288 of 300 |
+| Tests selected for a change in non-test code: median | 5 | 9 |
+| ... 75th percentile | 65 | 70 |
+| ... 90th percentile | 328 | 487 |
+| ... worst case | 4,779 | 3,292 |
+| Changes in non-test code that reach no test | 86 of 222 | 61 of 220 |
+| API scenarios selected, median of 178 | 46 | 35 |
+| Crates the crate-level plan would run in full, median | 6 | 6 |
 
-The 46 scenarios are the ones with a request that could not be tied to a
-handler; they run whenever their crate is affected.
+The compiler records select somewhat more tests and leave fewer changes with
+no test at all: they follow calls the index cannot see. Neither has been
+checked against real failures yet.
 
 ## Install
 
@@ -103,6 +108,44 @@ through the existing lines that had to change to call it; a new item added
 between existing items falls back to the whole crate.
 
 The default, `--scip-revision head`, expects an index of the working tree.
+
+### References from the compiler, instead of an index
+
+The index can be skipped altogether. `driver/` holds `pion-rustc`, a rustc
+wrapper that records which definition refers to which while the workspace
+compiles:
+
+```bash
+# Once: build the wrapper with the nightly the workspace builds with
+rustup component add rustc-dev llvm-tools --toolchain "$NIGHTLY"
+cargo +"$NIGHTLY" build --release --manifest-path driver/Cargo.toml
+
+# Whenever the workspace is checked anyway
+RUSTC_WORKSPACE_WRAPPER=/path/to/pion-rustc PION_REFS_DIR=target/pion/refs \
+  cargo check --workspace --all-targets
+
+cargo pion plan --base origin/main --refs target/pion/refs
+```
+
+cargo recompiles only what changed, so the records are brought up to date by
+the compile that happens anyway. On the 172-crate workspace a full check took
+130 s without the wrapper and 120 s with it; the recording itself added up to
+15 s across all crates. Compare 26 minutes and 19 GB for the index.
+
+The compiler also knows what an index cannot show:
+
+- Code a macro generated. A derived impl is a definition like any other, so a
+  call that goes through it is followed, and a change to the `#[derive(...)]`
+  line belongs to it.
+- The impl a trait call runs, whenever the type is known. Only calls through a
+  generic parameter or `dyn Trait` fall back to the trait method.
+
+The costs: the wrapper uses the compiler's internal API, so it is tied to one
+nightly toolchain and needs fixing when that is bumped; and the records are
+large (851 MB of JSON for that workspace). If recording a crate fails, the
+wrapper runs the untouched rustc instead, so the build is unaffected, and
+leaves a marker; pion then runs all tests of that crate whenever a change
+touches it or something it depends on.
 
 ### What would run if this line changed
 

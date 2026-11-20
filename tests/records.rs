@@ -227,3 +227,15 @@ fn an_unrecorded_crate_the_change_cannot_reach_is_left_alone() {
         ]
     );
 }
+
+#[test]
+fn a_derive_line_belongs_to_the_impl_it_generates() {
+    // The derived impl has no text of its own; the `#[derive(Default)]`
+    // that generates it stands in for it.
+    let plan = Fixture::load().plan_edit("core/src/config.rs", "#[derive(Default)]");
+
+    assert_eq!(
+        selected(&plan),
+        ["fx-core: config::tests::default_config_has_a_limit"]
+    );
+}

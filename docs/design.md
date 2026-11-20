@@ -138,6 +138,43 @@ fixture と tachyon-apps に実際に rust-analyzer をかけて確かめた。
   足す変更がこれに当たる。ここは次に絞りたいところ。
 - 19 GB の memory が要るので、索引を作る runner は大きいものが要る。
 
+### compiler から参照を取る（`pion-rustc`）
+
+索引づくりの 26 分・19 GB を避けるため、参照を compiler 自身に書き出させる方法を
+足した。`driver/` の `pion-rustc` を `RUSTC_WORKSPACE_WRAPPER` に指定すると、各 crate
+をいつもどおり compile し、型検査が終わった時点で定義と参照を JSON に書き出す。
+`cargo pion plan --refs <DIR>` がそれを読む。計画を作る部分は索引の場合と同じ。
+
+tachyon-apps で測った結果（2026-11-21）:
+
+| 項目 | 結果 |
+| --- | --- |
+| `cargo check --workspace --all-targets`（workspace の crate だけ） | 素の rustc で 130 秒、wrapper あり 120 秒 |
+| 記録そのものにかかった時間 | 全 crate の合計で 15 秒 |
+| 記録の大きさ | 851 MB（598 ファイル） |
+| 記録に失敗した crate | なし |
+| 記録を読んで 300 件の計画を出す時間 | 約 5 秒 |
+
+索引より良くなる点:
+
+- macro が生成した定義も node になる。derive の impl を通る呼び出しを辿れ、
+  `#[derive(...)]` の行の変更は、それが生成した impl の変更として扱える。
+- trait の呼び出しを、型が分かる限り、実際に呼ばれる impl まで解決する。trait の
+  method に戻るのは、generic や `dyn Trait` 越しの呼び出しだけ。
+- cargo は変わった crate だけ compile し直すので、記録もその分だけ更新される。
+
+注意点:
+
+- compiler の内部 API（`rustc_private`）を使うので、特定の nightly に結びつく。
+  toolchain を上げるたびに手直しが要る。
+- 記録に失敗した crate は、素の rustc でやり直す。build は wrapper なしと同じ結果に
+  なる。失敗の目印を残し、pion はその crate を絞り込まずに全部流す。
+- JSON が大きい。形式を詰める余地がある。
+
+同じ 300 行での比較は README の表にある。compiler の記録のほうが選ぶテストがやや
+多く、「どのテストにも届かない変更」が少ない（222 件中 86 件 → 220 件中 61 件）。
+索引では見えなかった呼び出しを辿っているため。
+
 ## L3：API テスト
 
 - シナリオの YAML には method と path が書いてある。これは静的に読める。
@@ -210,7 +247,8 @@ struct TestPlan { crates, scenarios, uncovered }
 - 新しい item（新しいテスト）を足した変更を、crate 全部に戻さずに絞る。
 - route の path が定数の箇所を読み、handler に結べないシナリオを減らす。
 - root の `Cargo.toml` の変更を、変わった依存を使う crate だけに絞る。
-- 索引を crate 単位で作って使い回し、26 分を縮める。
+- compiler の記録（`pion-rustc`）を CI の check に組み込み、索引づくりをやめる。
+- 記録の JSON を小さくする（851 MB）。
 
 ## まだ確かめていないこと
 

@@ -5,13 +5,13 @@
 {"id":"fx_core::config::Limit","name":"Limit","callable":false,"file":"core/src/config.rs","first_line":1,"last_line":1},
 {"id":"fx_core::config::{impl#0}","name":"{impl#0}","callable":false,"file":"core/src/config.rs","first_line":3,"last_line":7},
 {"id":"fx_core::config::Config","name":"Config","callable":false,"file":"core/src/config.rs","first_line":9,"last_line":14},
-{"id":"fx_core::config::{impl#1}","name":"{impl#1}","callable":false},
+{"id":"fx_core::config::{impl#1}","name":"{impl#1}","callable":false,"file":"core/src/config.rs","first_line":11,"last_line":11},
 {"id":"fx_core::token::Token","name":"Token","callable":false,"file":"core/src/token.rs","first_line":3,"last_line":5},
 {"id":"fx_core::token::{impl#0}","name":"{impl#0}","callable":false,"file":"core/src/token.rs","first_line":7,"last_line":11},
 {"id":"fx_core::LIMIT","name":"LIMIT","callable":false,"file":"core/src/lib.rs","first_line":4,"last_line":4},
 {"id":"fx_core::core","name":"core","callable":true,"file":"core/src/lib.rs","first_line":6,"last_line":6},
 {"id":"fx_core::config::{impl#0}::default","name":"default","callable":true,"file":"core/src/config.rs","first_line":4,"last_line":6},
-{"id":"fx_core::config::{impl#1}::default","name":"default","callable":true},
+{"id":"fx_core::config::{impl#1}::default","name":"default","callable":true,"file":"core/src/config.rs","first_line":11,"last_line":11},
 {"id":"fx_core::token::{impl#0}::is_expired","name":"is_expired","callable":true,"file":"core/src/token.rs","first_line":8,"last_line":10}
 ],
 "mentions":[

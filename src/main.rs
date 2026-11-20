@@ -422,7 +422,9 @@ fn impact(args: &ImpactArgs) -> Result<ExitCode, Failure> {
             })
             .sum();
         let definition = symbols
-            .definition_at_line(&path, line.saturating_sub(1))
+            .definitions_at_line(&path, line.saturating_sub(1))
+            .into_iter()
+            .next()
             .map(ToString::to_string);
         let fallbacks: BTreeSet<String> = narrowed
             .crates

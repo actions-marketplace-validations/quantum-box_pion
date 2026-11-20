@@ -355,17 +355,15 @@ impl<'a> Planner<'a> {
         let lines = narrowing.lines.get(path).ok_or_else(not_in_index)?;
         let mut symbols = BTreeSet::new();
         for changed in lines {
-            let owner = narrowing.symbols.definition_at_line(path, changed.line);
+            let mut owners = narrowing.symbols.definitions_at_line(path, changed.line);
             // A change between two lines is inside a definition only when
             // both lines are.
-            let owner = match changed.gap_to {
-                Some(next) => owner.filter(|owner| {
-                    narrowing.symbols.definition_at_line(path, next) == Some(owner)
-                }),
-                None => owner,
-            };
-            if let Some(symbol) = owner {
-                symbols.insert(symbol.clone());
+            if let Some(next) = changed.gap_to {
+                let after = narrowing.symbols.definitions_at_line(path, next);
+                owners.retain(|owner| after.contains(owner));
+            }
+            if !owners.is_empty() {
+                symbols.extend(owners.into_iter().cloned());
             } else if !is_blank_or_comment(changed) {
                 return Err(FallbackCause::OutsideDefinitions {
                     path: path.clone(),

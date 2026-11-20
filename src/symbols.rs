@@ -488,23 +488,34 @@ impl ReferenceGraph {
         self.files.contains_key(path)
     }
 
-    /// The definition a change on `line` (zero-based) belongs to: the
-    /// innermost one whose item spans the line. When several share that
-    /// range, it is the one whose name comes first, the function the others
-    /// are written inside.
-    pub fn definition_at_line(&self, path: &RepoPath, line: u32) -> Option<&SymbolId> {
-        let file = self.files.get(path)?;
+    /// The definitions a change on `line` (zero-based) belongs to: the
+    /// innermost one whose item spans the line. Empty when no definition
+    /// does.
+    ///
+    /// Several definitions can share that innermost range. In a rust-analyzer
+    /// index they are a function and the items written inside it, and the
+    /// function, whose name comes first, stands for all. In compiler records
+    /// they are the items one macro call generated, with no order among
+    /// them, and the change belongs to each.
+    pub fn definitions_at_line(&self, path: &RepoPath, line: u32) -> BTreeSet<&SymbolId> {
+        let Some(file) = self.files.get(path) else {
+            return BTreeSet::new();
+        };
         let spanning = || {
             file.definitions
                 .iter()
                 .rev()
                 .filter(move |definition| definition.item.contains_line(line))
         };
-        let innermost = spanning().next()?;
-        spanning()
-            .filter(|definition| definition.item == innermost.item)
-            .min_by_key(|definition| definition.name.start)
+        let Some(innermost) = spanning().next() else {
+            return BTreeSet::new();
+        };
+        let sharing = || spanning().filter(|definition| definition.item == innermost.item);
+        let first = sharing().map(|definition| definition.name.start).min();
+        sharing()
+            .filter(|definition| Some(definition.name.start) == first)
             .map(|definition| &definition.symbol)
+            .collect()
     }
 
     /// The references written in `path` between two positions.
