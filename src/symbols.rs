@@ -9,6 +9,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::change::RepoPath;
+use crate::records::CrateRecords;
 use crate::scip::{Index, Occurrence, Position, Range};
 use crate::workspace::{PackageName, WorkspaceGraph};
 
@@ -99,6 +100,10 @@ impl SymbolId {
 
 impl fmt::Display for SymbolId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.0.starts_with("rust-analyzer ") {
+            // A path the compiler wrote, readable as it is.
+            return self.0.fmt(f);
+        }
         // The descriptors are what a reader recognizes; the header repeats.
         let package = self.0.split(' ').nth(2).unwrap_or("");
         write!(f, "{package}::{}", self.descriptors())
@@ -163,6 +168,8 @@ struct Definition {
 pub struct Reference {
     pub range: Range,
     pub symbol: SymbolId,
+    /// The mentioned definition is a function or method.
+    pub callable: bool,
 }
 
 #[derive(Debug, Default)]
@@ -209,6 +216,98 @@ impl ReferenceGraph {
             built.files.insert(path, file);
         }
         built.link_trait_methods();
+        built
+    }
+
+    /// Builds the graph from the records the compiler wrote for each crate
+    /// of the workspace `graph` describes (see [`crate::records`]).
+    pub fn from_records(records: &[CrateRecords], graph: &WorkspaceGraph) -> Self {
+        let mut built = Self::default();
+        let line_start = |line: u32| Position {
+            line: line.saturating_sub(1),
+            column: 0,
+        };
+        for record in records {
+            let package = graph.package(&record.package);
+            for definition in &record.definitions {
+                let symbol = SymbolId(definition.id.clone());
+                if definition.callable {
+                    built
+                        .callables
+                        .entry(definition.name.clone())
+                        .or_default()
+                        .insert(symbol.clone());
+                }
+                if let (Some(test), Some(package)) = (&definition.test, &package) {
+                    built.tests.insert(
+                        symbol.clone(),
+                        TestCase {
+                            package: package.clone(),
+                            name: Some(TestName(test.clone())),
+                        },
+                    );
+                }
+                let place = (
+                    &definition.file,
+                    definition.first_line,
+                    definition.last_line,
+                );
+                let (Some(file), Some(first), Some(last)) = place else {
+                    continue;
+                };
+                let Some(path) = graph.repo_path(file) else {
+                    continue;
+                };
+                // The same file is compiled more than once (the library and
+                // its tests); keep each definition once.
+                let definitions = &mut built.files.entry(path).or_default().definitions;
+                if definitions.iter().all(|known| known.symbol != symbol) {
+                    definitions.push(Definition {
+                        symbol,
+                        name: Range {
+                            start: line_start(first),
+                            end: line_start(first),
+                        },
+                        item: Range {
+                            start: line_start(first),
+                            end: Position {
+                                line: last.saturating_sub(1),
+                                column: u32::MAX,
+                            },
+                        },
+                    });
+                }
+            }
+            for mention in &record.mentions {
+                let Some(path) = graph.repo_path(&mention.file) else {
+                    continue;
+                };
+                let start = Position {
+                    line: mention.line.saturating_sub(1),
+                    column: mention.column,
+                };
+                built
+                    .files
+                    .entry(path)
+                    .or_default()
+                    .references
+                    .push(Reference {
+                        range: Range { start, end: start },
+                        symbol: SymbolId(mention.to.clone()),
+                        callable: mention.callable,
+                    });
+            }
+            for (changed, affected) in &record.affects {
+                built.affects(&SymbolId(changed.clone()), &SymbolId(affected.clone()));
+            }
+        }
+        for file in built.files.values_mut() {
+            file.definitions.sort_by(|a, b| a.item.outer_first(&b.item));
+            file.references
+                .sort_by_key(|reference| reference.range.start);
+            file.references
+                .dedup_by(|a, b| a.range == b.range && a.symbol == b.symbol);
+        }
         built
     }
 
@@ -310,6 +409,7 @@ impl ReferenceGraph {
             }
             references.push(Reference {
                 range: mention.range,
+                callable: symbol.is_callable(),
                 symbol,
             });
         }
@@ -334,7 +434,10 @@ impl ReferenceGraph {
     ///
     /// A call through `dyn Trait` or a generic refers to the trait method,
     /// not to an impl. So a change to an impl affects whatever depends on the
-    /// trait method, and a change to the trait method affects every impl.
+    /// trait method. The reverse is not recorded: a caller that uses the
+    /// trait's default body refers to the trait method itself, and tying the
+    /// trait method to its impls would make every impl of a common trait
+    /// affect every other.
     /// The index names the trait of an impl by its bare name; when two traits
     /// share a name, an impl is tied to both.
     fn link_trait_methods(&mut self) {
@@ -357,7 +460,6 @@ impl ReferenceGraph {
             };
             for declaration in declarations.clone() {
                 self.affects(&implementation, &declaration);
-                self.affects(&declaration, &implementation);
             }
         }
     }

@@ -2,17 +2,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use pion::git::{self, Revision, Side};
 use pion::lockfile::Lockfile;
 use pion::scip::Index;
 use pion::{
     ChangeSet, FallbackCause, Narrowing, Planner, Reason, ReferenceGraph, RepoPath, ScenarioReason,
-    Selection, TestPlan, WorkspaceGraph, audit, scenario,
+    Selection, TestPlan, WorkspaceGraph, audit, records, scenario,
 };
 
 type Failure = Box<dyn std::error::Error>;
+
+/// Prints a line to standard output. When the reader has gone away
+/// (`cargo pion plan | head`), there is nobody left to tell, so stop quietly
+/// instead of panicking as `println!` would.
+macro_rules! say {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        if writeln!(std::io::stdout(), $($argument)*).is_err() {
+            std::process::exit(0);
+        }
+    }};
+}
 
 /// `cargo pion ...` arrives as `cargo-pion pion ...`.
 #[derive(Parser)]
@@ -52,9 +64,14 @@ struct Selecting {
     /// a change inside a crate selects only the tests that reach it
     #[arg(long)]
     scip: Option<Utf8PathBuf>,
-    /// Which revision the index was built from. `base` lets one index,
-    /// built once for a commit, serve every change made on top of it
-    #[arg(long, value_enum, default_value_t = Indexed::Head)]
+    /// A directory of reference records written by `pion-rustc` while the
+    /// workspace compiled. An alternative to `--scip` that costs no separate
+    /// analysis
+    #[arg(long, value_name = "DIR", conflicts_with = "scip")]
+    refs: Option<Utf8PathBuf>,
+    /// Which revision the index or the records describe. `base` lets one
+    /// index, built once for a commit, serve every change made on top of it
+    #[arg(long, value_enum, default_value_t = Indexed::Head, alias = "refs-revision")]
     scip_revision: Indexed,
     /// A directory of API scenario files to select from; repeatable
     #[arg(long = "scenarios", value_name = "DIR")]
@@ -118,8 +135,11 @@ struct ImpactArgs {
     #[arg(long, default_value = "Cargo.toml")]
     manifest_path: Utf8PathBuf,
     /// A SCIP index of the working tree (see `cargo pion index`)
-    #[arg(long)]
-    scip: Utf8PathBuf,
+    #[arg(long, required_unless_present = "refs")]
+    scip: Option<Utf8PathBuf>,
+    /// A directory of reference records written by `pion-rustc`
+    #[arg(long, value_name = "DIR", conflicts_with = "scip")]
+    refs: Option<Utf8PathBuf>,
     /// A directory of API scenario files to select from; repeatable
     #[arg(long = "scenarios", value_name = "DIR")]
     scenario_dirs: Vec<Utf8PathBuf>,
@@ -166,14 +186,14 @@ fn main() -> ExitCode {
 fn plan(args: &PlanArgs) -> Result<ExitCode, Failure> {
     let (changes, plan) = select(&args.selecting)?;
     match args.format {
-        Format::Json => println!("{}", serde_json::to_string_pretty(&plan)?),
+        Format::Json => say!("{}", serde_json::to_string_pretty(&plan)?),
         Format::Nextest => match plan.nextest_filterset() {
-            Some(filterset) => println!("{filterset}"),
+            Some(filterset) => say!("{filterset}"),
             None => eprintln!("no test is affected"),
         },
         Format::Packages => {
             for package in plan.crates.keys() {
-                println!("{package}");
+                say!("{package}");
             }
         }
         Format::GithubMatrix => {
@@ -187,11 +207,11 @@ fn plan(args: &PlanArgs) -> Result<ExitCode, Failure> {
                     })
                 })
                 .collect();
-            println!("{}", serde_json::json!({ "include": include }));
+            say!("{}", serde_json::json!({ "include": include }));
         }
         Format::Scenarios => {
             for scenario in plan.scenarios.keys() {
-                println!("{scenario}");
+                say!("{scenario}");
             }
         }
         Format::Text => print_text(&changes, &plan),
@@ -246,7 +266,7 @@ fn index(args: &IndexArgs) -> Result<ExitCode, Failure> {
     }
 
     let size = std::fs::metadata(&args.output)?.len();
-    println!(
+    say!(
         "{} ({} MB, {} s)",
         args.output,
         size / 1_000_000,
@@ -254,10 +274,10 @@ fn index(args: &IndexArgs) -> Result<ExitCode, Failure> {
     );
     let diagnostics = summarize_diagnostics(&log);
     if !diagnostics.is_empty() {
-        println!("rust-analyzer diagnostics (full log: {log_path}):");
+        say!("rust-analyzer diagnostics (full log: {log_path}):");
     }
     for (kind, count) in diagnostics {
-        println!("  {count:>6}  {kind}{}", diagnostic_note(&kind));
+        say!("  {count:>6}  {kind}{}", diagnostic_note(&kind));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -313,19 +333,36 @@ fn audit_plan(args: &AuditArgs) -> Result<ExitCode, Failure> {
     }
     let failed = outcomes.iter().filter(|outcome| outcome.failed).count();
     let misses = audit::missed(&plan, &outcomes);
-    println!(
+    say!(
         "{} test(s) ran, {failed} failed, {} failure(s) the plan did not select",
         outcomes.len(),
         misses.len()
     );
     for miss in &misses {
-        println!("  {} {}", miss.package, miss.test);
+        say!("  {} {}", miss.package, miss.test);
     }
     Ok(if misses.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Builds the reference graph from whichever source was given.
+fn reference_graph(
+    scip: Option<&Utf8Path>,
+    refs: Option<&Utf8Path>,
+    graph: &WorkspaceGraph,
+) -> Result<Option<ReferenceGraph>, Failure> {
+    if let Some(path) = scip {
+        let index = Index::decode(&std::fs::read(path)?)?;
+        return Ok(Some(ReferenceGraph::build(&index, graph)));
+    }
+    if let Some(directory) = refs {
+        let records = records::read_directory(directory)?;
+        return Ok(Some(ReferenceGraph::from_records(&records, graph)));
+    }
+    Ok(None)
 }
 
 /// Plans for each given line on its own, as if only that line had changed.
@@ -336,8 +373,8 @@ fn impact(args: &ImpactArgs) -> Result<ExitCode, Failure> {
     let manifest_dir = manifest.parent().ok_or("the manifest path has no parent")?;
     let repository = git::repository_root(manifest_dir)?.canonicalize_utf8()?;
     let graph = WorkspaceGraph::load(&manifest, &repository)?;
-    let index = Index::decode(&std::fs::read(&args.scip)?)?;
-    let symbols = ReferenceGraph::build(&index, &graph);
+    let symbols = reference_graph(args.scip.as_deref(), args.refs.as_deref(), &graph)?
+        .ok_or("give --scip or --refs")?;
     let (scenarios, scenario_roots) = scenario::discover(
         &args.scenario_dirs,
         &repository,
@@ -398,7 +435,7 @@ fn impact(args: &ImpactArgs) -> Result<ExitCode, Failure> {
                 _ => None,
             })
             .collect();
-        println!(
+        say!(
             "{}",
             serde_json::json!({
                 "path": path,
@@ -441,13 +478,7 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
         None => None,
     };
 
-    let symbols = match &args.scip {
-        Some(path) => {
-            let index = Index::decode(&std::fs::read(path)?)?;
-            Some(ReferenceGraph::build(&index, &graph))
-        }
-        None => None,
-    };
+    let symbols = reference_graph(args.scip.as_deref(), args.refs.as_deref(), &graph)?;
     let lines = match &symbols {
         Some(_) => {
             let side = match args.scip_revision {
@@ -488,7 +519,7 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
 }
 
 fn print_text(changes: &ChangeSet, plan: &TestPlan) {
-    println!(
+    say!(
         "{} changed file(s), {} crate(s) and {} scenario(s) to test",
         changes.files().len(),
         plan.crates.len(),
@@ -496,41 +527,39 @@ fn print_text(changes: &ChangeSet, plan: &TestPlan) {
     );
     for (package, crate_plan) in &plan.crates {
         match &crate_plan.selection {
-            Selection::All => println!("\n{package} (all tests)"),
+            Selection::All => say!("\n{package} (all tests)"),
             Selection::Tests(tests) => {
-                println!("\n{package} ({} test(s))", tests.len());
+                say!("\n{package} ({} test(s))", tests.len());
                 for test in tests {
-                    println!("  test: {test}");
+                    say!("  test: {test}");
                 }
             }
         }
         for reason in &crate_plan.reasons {
-            println!("  {}", describe(reason));
+            say!("  {}", describe(reason));
         }
     }
     for (scenario, reasons) in &plan.scenarios {
-        println!("\n{scenario}");
+        say!("\n{scenario}");
         for reason in reasons {
             match reason {
-                ScenarioReason::FileChanged => println!("  the scenario changed"),
+                ScenarioReason::FileChanged => say!("  the scenario changed"),
                 ScenarioReason::Reaches { changed, handler } => {
-                    println!("  {handler} reaches {changed}")
+                    say!("  {handler} reaches {changed}")
                 }
                 ScenarioReason::CrateNotNarrowed { package } => {
-                    println!("  {package} runs all tests, so handlers were not traced")
+                    say!("  {package} runs all tests, so handlers were not traced")
                 }
                 ScenarioReason::Untraced { package } => {
-                    println!(
-                        "  a request could not be tied to a handler, and {package} is affected"
-                    )
+                    say!("  a request could not be tied to a handler, and {package} is affected")
                 }
             }
         }
     }
     if !plan.uncovered.is_empty() {
-        println!("\nnot covered by any rule:");
+        say!("\nnot covered by any rule:");
         for path in &plan.uncovered {
-            println!("  {path}");
+            say!("  {path}");
         }
     }
 }

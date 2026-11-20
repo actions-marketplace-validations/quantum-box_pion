@@ -16,6 +16,7 @@ pub mod change;
 pub mod git;
 pub mod lockfile;
 pub mod plan;
+pub mod records;
 pub mod routes;
 pub mod scenario;
 pub mod scip;

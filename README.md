@@ -154,7 +154,6 @@ a changed definition is affected, and so on, until it reaches test functions.
 | Situation | Rule |
 | --- | --- |
 | A call through `dyn Trait` or a generic | A change to an impl affects everything that refers to the trait method |
-| A trait method's own definition changes | Every impl of it is affected |
 | A struct field or enum variant changes | Everything that refers to the type is affected |
 | A changed line is outside every definition (an import, an attribute, an `impl` header, a macro call) | The crate runs all its tests, and so do its dependents |
 | The file is not in the index (new, deleted, not compiled) | Same |

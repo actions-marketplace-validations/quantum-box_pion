@@ -1,0 +1,19 @@
+[package]
+name = "pion-rustc"
+version = "0.1.0"
+edition = "2024"
+description = "A rustc wrapper that records which definition refers to which, for pion"
+license = "MIT"
+publish = false
+
+# Built against the compiler's own crates (`rustc_private`), so it has to be
+# compiled with the exact nightly toolchain of the workspace it will wrap:
+#
+#   rustup component add rustc-dev llvm-tools --toolchain <nightly>
+#   cargo +<nightly> build --release --manifest-path driver/Cargo.toml
+#
+# It is a workspace of its own: the main crate builds on stable.
+[workspace]
+
+[package.metadata.rust-analyzer]
+rustc_private = true

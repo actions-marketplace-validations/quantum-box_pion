@@ -134,7 +134,7 @@ impl RouteTable {
                         lines.position(method.arguments_start),
                         lines.position(end),
                     )
-                    .find(|reference| reference.symbol.as_str().ends_with("()."));
+                    .find(|reference| reference.callable);
                 if let Some(handler) = handler {
                     self.routes.push(Route {
                         method: method.name.to_uppercase(),

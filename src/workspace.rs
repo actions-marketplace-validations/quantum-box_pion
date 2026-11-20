@@ -100,6 +100,14 @@ impl WorkspaceGraph {
         self.repo_path("Cargo.lock")
     }
 
+    /// The workspace crate called `name`, if there is one.
+    pub fn package(&self, name: &str) -> Option<PackageName> {
+        self.ids
+            .keys()
+            .find(|package| package.as_str() == name)
+            .cloned()
+    }
+
     /// Every workspace crate.
     pub fn packages(&self) -> BTreeSet<PackageName> {
         self.ids.keys().cloned().collect()
