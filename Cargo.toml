@@ -1,0 +1,29 @@
+[package]
+name = "cargo-pion"
+version = "0.1.0"
+edition = "2024"
+description = "Select the tests a change can affect, from the Cargo dependency graph"
+license = "MIT"
+repository = "https://github.com/quantum-box/pion"
+rust-version = "1.99"
+exclude = ["tests/fixtures"]
+
+[lib]
+name = "pion"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cargo-pion"
+path = "src/main.rs"
+
+# Dependencies are kept few and well known on purpose: this tool runs in CI
+# next to deploy credentials. Record the reason when adding one.
+[dependencies]
+# Cargo dependency graph queries (maintained by the nextest authors).
+guppy = "0.19.1"
+# UTF-8 paths, the path type guppy exposes.
+camino = { version = "1.2", features = ["serde1"] }
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
