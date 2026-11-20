@@ -1,6 +1,6 @@
 //! Reads the changed paths from git.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -251,6 +251,38 @@ fn parse_hunk_header(header: &str) -> Option<Hunk> {
         new_count,
         added: Vec::new(),
     })
+}
+
+/// The files at `revision` whose text contains `needle`, found by one
+/// `git grep` instead of reading every file.
+pub fn files_containing(
+    repository: &Utf8Path,
+    revision: &Revision,
+    needle: &str,
+) -> Result<BTreeSet<RepoPath>, GitError> {
+    let arguments = [
+        "grep",
+        "-l",
+        "-z",
+        "--fixed-strings",
+        "-e",
+        needle,
+        &revision.0,
+        "--",
+    ];
+    let output = match run(repository, &arguments) {
+        Ok(output) => output,
+        // `git grep` exits 1 when nothing matches.
+        Err(GitError::Failed { stderr, .. }) if stderr.is_empty() => String::new(),
+        Err(error) => return Err(error),
+    };
+    // Each entry is `<revision>:<path>`.
+    let prefix = format!("{}:", revision.0);
+    output
+        .split('\0')
+        .filter_map(|entry| entry.strip_prefix(&prefix))
+        .map(|path| RepoPath::parse(path).map_err(GitError::from))
+        .collect()
 }
 
 /// The text of `path` at `revision`, or `None` when it does not exist there.

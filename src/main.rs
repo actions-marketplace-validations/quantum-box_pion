@@ -228,9 +228,16 @@ fn run(args: &RunArgs) -> Result<ExitCode, Failure> {
         eprintln!("no test is affected");
         return Ok(ExitCode::SUCCESS);
     };
+    // A filterset chooses among the tests nextest has built; it does not
+    // limit what gets built. Naming the crates does.
+    let packages = plan
+        .crates
+        .keys()
+        .flat_map(|package| ["--package", package.as_str()]);
     let status = Command::new("cargo")
         .args(["nextest", "run", "--manifest-path"])
         .arg(&args.selecting.manifest_path)
+        .args(packages)
         .args(["-E", &filterset])
         .args(&args.nextest_args)
         .status()?;
@@ -492,9 +499,20 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
         None => BTreeMap::new(),
     };
 
-    // Routes are read from the same revision the index describes.
+    // Routes are read from the same revision the index describes. At the
+    // base revision that means asking git, so first find the few files that
+    // register routes instead of asking for every file.
+    let registering_routes = match args.scip_revision {
+        Indexed::Base if symbols.is_some() && !args.scenario_dirs.is_empty() => {
+            git::files_containing(&repository, &args.base, ".route(")?
+        }
+        _ => BTreeSet::new(),
+    };
     let read_source = |path: &RepoPath| match args.scip_revision {
-        Indexed::Base => git::file_at(&repository, &args.base, path).ok().flatten(),
+        Indexed::Base => registering_routes
+            .contains(path)
+            .then(|| git::file_at(&repository, &args.base, path).ok().flatten())
+            .flatten(),
         Indexed::Head => std::fs::read_to_string(repository.join(path.as_path())).ok(),
     };
     let (scenarios, scenario_roots) = scenario::discover(
