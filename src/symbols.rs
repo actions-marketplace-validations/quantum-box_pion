@@ -9,7 +9,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::change::RepoPath;
-use crate::records::CrateRecords;
+use crate::records::Records;
 use crate::scip::{Index, Occurrence, Position, Range};
 use crate::workspace::{PackageName, WorkspaceGraph};
 
@@ -198,6 +198,8 @@ pub struct ReferenceGraph {
     tests: BTreeMap<SymbolId, TestCase>,
     /// Function or method name -> the definitions with that name.
     callables: BTreeMap<String, BTreeSet<SymbolId>>,
+    /// Crates the graph knows it is missing records for.
+    unrecorded: BTreeSet<PackageName>,
 }
 
 impl ReferenceGraph {
@@ -221,13 +223,20 @@ impl ReferenceGraph {
 
     /// Builds the graph from the records the compiler wrote for each crate
     /// of the workspace `graph` describes (see [`crate::records`]).
-    pub fn from_records(records: &[CrateRecords], graph: &WorkspaceGraph) -> Self {
-        let mut built = Self::default();
+    pub fn from_records(records: &Records, graph: &WorkspaceGraph) -> Self {
+        let mut built = Self {
+            unrecorded: records
+                .unrecorded
+                .iter()
+                .filter_map(|name| graph.package(name))
+                .collect(),
+            ..Self::default()
+        };
         let line_start = |line: u32| Position {
             line: line.saturating_sub(1),
             column: 0,
         };
-        for record in records {
+        for record in &records.crates {
             let package = graph.package(&record.package);
             for definition in &record.definitions {
                 let symbol = SymbolId(definition.id.clone());
@@ -462,6 +471,12 @@ impl ReferenceGraph {
                 self.affects(&implementation, &declaration);
             }
         }
+    }
+
+    /// Crates whose references could not be recorded. What refers to what
+    /// inside them is unknown, so they cannot be narrowed.
+    pub fn unrecorded(&self) -> &BTreeSet<PackageName> {
+        &self.unrecorded
     }
 
     /// The files the index covers.

@@ -581,6 +581,9 @@ fn describe(reason: &Reason) -> String {
                 format!("changed outside every definition: {path}:{line}")
             }
             FallbackCause::UnnamedTest { test } => format!("a reached test has no name: {test}"),
+            FallbackCause::NotRecorded { package } => {
+                format!("references were not recorded for: {package}")
+            }
         },
     }
 }

@@ -5,6 +5,8 @@
 //! writes them, including calls into code a macro generated, so nothing is
 //! inferred here.
 
+use std::collections::BTreeSet;
+
 use camino::Utf8Path;
 use serde::Deserialize;
 
@@ -59,24 +61,40 @@ pub enum RecordsError {
     },
 }
 
-/// Reads every `*.json` record in `directory`.
-pub fn read_directory(directory: &Utf8Path) -> Result<Vec<CrateRecords>, RecordsError> {
+/// The records of a workspace build.
+#[derive(Debug, Clone, Default)]
+pub struct Records {
+    pub crates: Vec<CrateRecords>,
+    /// Packages with a crate that compiled but could not be recorded. Their
+    /// records are missing or stale, so nothing about them can be narrowed.
+    pub unrecorded: BTreeSet<String>,
+}
+
+/// Reads every `*.json` record in `directory`, and the `*.failed` markers
+/// `pion-rustc` leaves when recording a crate failed.
+pub fn read_directory(directory: &Utf8Path) -> Result<Records, RecordsError> {
+    let mut records = Records::default();
     let mut paths = Vec::new();
     for entry in directory.read_dir_utf8()? {
         let path = entry?.into_path();
-        if path.extension() == Some("json") {
-            paths.push(path);
+        match path.extension() {
+            Some("json") => paths.push(path),
+            Some("failed") => {
+                records
+                    .unrecorded
+                    .insert(std::fs::read_to_string(&path)?.trim().to_owned());
+            }
+            _ => {}
         }
     }
     paths.sort();
-    paths
-        .into_iter()
-        .map(|path| {
-            let text = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&text).map_err(|source| RecordsError::Json {
-                path: path.into_string(),
-                source,
-            })
-        })
-        .collect()
+    for path in paths {
+        let text = std::fs::read_to_string(&path)?;
+        let record = serde_json::from_str(&text).map_err(|source| RecordsError::Json {
+            path: path.into_string(),
+            source,
+        })?;
+        records.crates.push(record);
+    }
+    Ok(records)
 }

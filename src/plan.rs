@@ -53,6 +53,9 @@ pub enum FallbackCause {
     OutsideDefinitions { path: RepoPath, line: u32 },
     /// A reached test's name cannot be derived from its symbol.
     UnnamedTest { test: SymbolId },
+    /// The crate's references could not be recorded, and the change touches
+    /// the crate or one it depends on.
+    NotRecorded { package: PackageName },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +152,8 @@ impl<'a> Planner<'a> {
         // Crates with a change attributed to a definition that is not a
         // test function.
         let mut production_crates = BTreeSet::new();
+        // Crates with a change attributed to any definition.
+        let mut narrowed_crates = BTreeSet::new();
         let mut changed_symbols = BTreeSet::new();
         let mut uncovered = Vec::new();
         let lockfile = self.graph.lockfile();
@@ -186,6 +191,7 @@ impl<'a> Planner<'a> {
                             if !only_tests {
                                 production_crates.insert(package.clone());
                             }
+                            narrowed_crates.insert(package.clone());
                             changed_symbols.extend(symbols);
                         }
                         Err(cause) => {
@@ -215,6 +221,26 @@ impl<'a> Planner<'a> {
                     .entry(package)
                     .or_default()
                     .insert(Reason::DependsOnCrate { package: origin });
+            }
+        }
+
+        // A crate whose references were not recorded cannot be narrowed: when
+        // a narrowed change touches it or anything it depends on, it runs
+        // every test.
+        if let Some(narrowing) = &self.narrowing {
+            let unrecorded = narrowing.symbols.unrecorded();
+            if !unrecorded.is_empty() {
+                for package in self.graph.affected_by(&narrowed_crates)?.into_keys() {
+                    if unrecorded.contains(&package) {
+                        let cause = FallbackCause::NotRecorded {
+                            package: package.clone(),
+                        };
+                        whole
+                            .entry(package)
+                            .or_default()
+                            .insert(Reason::FellBack { cause });
+                    }
+                }
             }
         }
 

@@ -40,9 +40,18 @@ struct Fixture {
 
 impl Fixture {
     fn load() -> Self {
+        Self::load_without_records_for(&[])
+    }
+
+    /// Loads the fixture as if recording had failed for `unrecorded` crates.
+    fn load_without_records_for(unrecorded: &[&str]) -> Self {
         let root = fixtures().join("workspace");
         let graph = WorkspaceGraph::load(&root.join("Cargo.toml"), &root).expect("workspace loads");
-        let records = records::read_directory(&fixtures().join("records")).expect("records load");
+        let mut records =
+            records::read_directory(&fixtures().join("records")).expect("records load");
+        records
+            .unrecorded
+            .extend(unrecorded.iter().map(|name| (*name).to_owned()));
         let symbols = ReferenceGraph::from_records(&records, &graph);
         let (scenarios, scenario_roots) = scenario::discover(
             &[root.join("api/tests/scenarios")],
@@ -190,4 +199,31 @@ fn a_line_outside_every_definition_falls_back_to_the_crate() {
     let plan = Fixture::load().plan_edit("core/src/token.rs", "use crate::LIMIT;");
 
     assert_eq!(selected(&plan), ["fx-api: *", "fx-auth: *", "fx-core: *"]);
+}
+
+#[test]
+fn a_crate_that_could_not_be_recorded_runs_all_its_tests() {
+    // Its records may be missing or stale, so which of its tests reach the
+    // change is unknown.
+    let fixture = Fixture::load_without_records_for(&["fx-auth"]);
+    let plan = fixture.plan_edit("core/src/token.rs", "self.age > LIMIT");
+
+    assert_eq!(
+        selected(&plan),
+        ["fx-auth: *", "fx-core: token::tests::token_roundtrip"]
+    );
+}
+
+#[test]
+fn an_unrecorded_crate_the_change_cannot_reach_is_left_alone() {
+    let fixture = Fixture::load_without_records_for(&["fx-tools"]);
+    let plan = fixture.plan_edit("core/src/token.rs", "self.age > LIMIT");
+
+    assert_eq!(
+        selected(&plan),
+        [
+            "fx-auth: tests::rejects_expired_token",
+            "fx-core: token::tests::token_roundtrip",
+        ]
+    );
 }

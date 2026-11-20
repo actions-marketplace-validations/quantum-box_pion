@@ -137,6 +137,12 @@ impl<'tcx> Collector<'tcx> {
             return def_id;
         }
         let arguments = typeck.node_args(hir_id);
+        // Type checking records the generic arguments of a call. A path
+        // that is not a call site (a `use`, a type position) has none, and
+        // resolving without them panics inside the compiler.
+        if arguments.len() != tcx.generics_of(def_id).count() {
+            return def_id;
+        }
         let environment = ty::TypingEnv::post_analysis(tcx, owner.to_def_id());
         match ty::Instance::try_resolve(tcx, environment, def_id, arguments) {
             Ok(Some(instance)) => instance.def_id(),
