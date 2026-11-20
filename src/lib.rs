@@ -1,15 +1,30 @@
 //! pion selects the tests a change can affect.
 //!
-//! The first level of resolution is the Cargo dependency graph: a change to a
-//! crate can affect that crate and every workspace crate that depends on it.
-//! Finer levels (definitions inside a crate, API scenarios) are described in
-//! `docs/design.md` and build on the same [`plan::TestPlan`].
+//! Three levels of resolution, each narrowing the one before:
+//!
+//! 1. Crates, from the Cargo dependency graph ([`workspace`]).
+//! 2. Tests inside a crate, from a reference graph built out of a
+//!    rust-analyzer SCIP index ([`symbols`]).
+//! 3. API scenarios, through the handlers their requests reach
+//!    ([`routes`], [`scenario`]).
+//!
+//! [`plan::Planner`] combines them into a [`plan::TestPlan`], and [`audit`]
+//! checks a plan against the results of a full test run.
 
+pub mod audit;
 pub mod change;
 pub mod git;
+pub mod lockfile;
 pub mod plan;
+pub mod routes;
+pub mod scenario;
+pub mod scip;
+pub mod symbols;
 pub mod workspace;
 
 pub use change::{ChangeSet, ChangedFile, FileKind, RepoPath};
-pub use plan::{FallbackCause, Reason, Selection, TestPlan};
+pub use plan::{
+    CratePlan, FallbackCause, Narrowing, Planner, Reason, ScenarioReason, Selection, TestPlan,
+};
+pub use symbols::{ReferenceGraph, SymbolId, TestName};
 pub use workspace::{PackageName, WorkspaceGraph};

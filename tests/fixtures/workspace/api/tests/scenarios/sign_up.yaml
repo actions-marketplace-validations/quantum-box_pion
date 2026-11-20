@@ -1,0 +1,14 @@
+name: "Sign up"
+steps:
+  - id: sign_up
+    request:
+      method: POST
+      url: /v1/auth/sign-up
+    expect:
+      status: 200
+  - id: health
+    request:
+      method: GET
+      url: /v1/health/{{vars.probe}}
+    expect:
+      status: 200

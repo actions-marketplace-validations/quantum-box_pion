@@ -1,0 +1,8 @@
+name: "Sign in"
+steps:
+  - id: sign_in
+    request:
+      method: POST
+      url: /v1/auth/sign-in
+    expect:
+      status: 200

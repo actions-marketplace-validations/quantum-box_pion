@@ -6,12 +6,12 @@ use std::fmt;
 use camino::{Utf8Path, Utf8PathBuf};
 use guppy::graph::{DependencyDirection, PackageGraph};
 use guppy::{MetadataCommand, PackageId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::change::RepoPath;
 
 /// The name of a workspace crate, as written in its `Cargo.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PackageName(String);
 
@@ -89,6 +89,17 @@ impl WorkspaceGraph {
         path.as_path().strip_prefix(&self.root).ok()
     }
 
+    /// The repository path of a file named relative to the workspace root,
+    /// the form a SCIP index uses.
+    pub fn repo_path(&self, workspace_relative: &str) -> Option<RepoPath> {
+        RepoPath::parse(self.root.join(workspace_relative).as_str()).ok()
+    }
+
+    /// The repository path of the workspace's `Cargo.lock`.
+    pub fn lockfile(&self) -> Option<RepoPath> {
+        self.repo_path("Cargo.lock")
+    }
+
     /// Every workspace crate.
     pub fn packages(&self) -> BTreeSet<PackageName> {
         self.ids.keys().cloned().collect()
@@ -122,26 +133,53 @@ impl WorkspaceGraph {
                 .ids
                 .get(origin)
                 .ok_or_else(|| WorkspaceError::UnknownPackage(origin.clone()))?;
-            let built_from_origin = self
-                .graph
-                .query_reverse([id])?
-                .resolve_with_fn(|_, link| !link.dev_only());
-            for package in built_from_origin.packages(DependencyDirection::Reverse) {
-                let direct_dependents = package.reverse_direct_links().map(|link| link.from());
-                for dependent in std::iter::once(package).chain(direct_dependents) {
-                    if !dependent.in_workspace() {
-                        continue;
-                    }
-                    affected
-                        .entry(PackageName(dependent.name().to_owned()))
-                        .or_insert_with(|| Dependency::DependsOn(origin.clone()));
-                }
+            for dependent in self.tests_built_from(id)? {
+                affected
+                    .entry(dependent)
+                    .or_insert_with(|| Dependency::DependsOn(origin.clone()));
             }
         }
         for package in changed {
             affected.insert(package.clone(), Dependency::Changed);
         }
         Ok(affected)
+    }
+
+    /// The workspace crates whose tests are built from the external package
+    /// `name` at `version`, or `None` when the dependency graph has no such
+    /// package.
+    pub fn dependents_of_external(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<BTreeSet<PackageName>>, WorkspaceError> {
+        let mut dependents = BTreeSet::new();
+        let mut found = false;
+        for package in self.graph.packages() {
+            if package.name() != name || package.version().to_string() != version {
+                continue;
+            }
+            found = true;
+            dependents.extend(self.tests_built_from(package.id())?);
+        }
+        Ok(found.then_some(dependents))
+    }
+
+    fn tests_built_from(&self, id: &PackageId) -> Result<BTreeSet<PackageName>, WorkspaceError> {
+        let built_from = self
+            .graph
+            .query_reverse([id])?
+            .resolve_with_fn(|_, link| !link.dev_only());
+        let mut crates = BTreeSet::new();
+        for package in built_from.packages(DependencyDirection::Reverse) {
+            let direct_dependents = package.reverse_direct_links().map(|link| link.from());
+            for dependent in std::iter::once(package).chain(direct_dependents) {
+                if dependent.in_workspace() {
+                    crates.insert(PackageName(dependent.name().to_owned()));
+                }
+            }
+        }
+        Ok(crates)
     }
 }
 

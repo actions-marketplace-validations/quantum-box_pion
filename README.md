@@ -2,28 +2,38 @@
 
 Select the tests a change can affect.
 
-pion reads the Cargo dependency graph of a workspace and the files that
-changed since a revision, and prints which crates' tests to run and why.
+pion reads what changed since a revision and prints which tests to run and
+why, at three levels of resolution:
+
+1. **Crates**, from the Cargo dependency graph.
+2. **Tests inside a crate**, from a reference graph of the code: only the
+   tests that reach a changed function, type or constant.
+3. **API scenarios**, through the handlers their requests reach.
 
 ```console
-$ cargo pion plan --base origin/main
-2 changed file(s), 3 crate(s) to test
+$ cargo pion plan --base origin/main --scip target/pion/index.scip \
+    --scenarios apps/api/tests/scenarios
+1 changed file(s), 2 crate(s) and 1 scenario(s) to test
 
-api
-  depends on: auth
+auth (1 test(s))
+  test: tests::rejects_expired_token
+  reaches: core::token/impl#[Token]is_expired().
 
-auth
-  changed: packages/auth/src/usecase/sign_in.rs
+core (1 test(s))
+  test: token::tests::token_roundtrip
+  reaches: core::token/impl#[Token]is_expired().
 
-auth_domain
-  changed: packages/auth/domain/src/token.rs
+apps/api/tests/scenarios/sign_in.yaml
+  api::sign_in_handler(). reaches core::token/impl#[Token]is_expired().
 ```
 
 ## Status
 
-Early. The first level of resolution (crates) works. Narrowing inside a crate
-and selecting API scenarios are designed in [docs/design.md](docs/design.md)
-and not built yet.
+Early. All three levels work and are tested against a real rust-analyzer
+index, but the selection rules have not yet been checked against a long
+history of full test runs. Keep running every test somewhere (see
+[Checking the selection](#checking-the-selection)) and do not gate a release
+on pion alone.
 
 ## Install
 
@@ -31,42 +41,115 @@ and not built yet.
 cargo install --git https://github.com/quantum-box/pion cargo-pion
 ```
 
+Narrowing inside crates needs `rust-analyzer` on the `PATH`
+(`rustup component add rust-analyzer`), and `cargo pion run` needs
+[cargo-nextest](https://nexte.st).
+
 ## Use
 
 ```bash
-# Changes in the working tree since a revision, untracked files included
+# Crate level: changes in the working tree since a revision
 cargo pion plan --base origin/main
 
 # Changes between two revisions
 cargo pion plan --base v1.2.0 --head v1.3.0
 
-# Run only the affected crates with nextest
-cargo nextest run -E "$(cargo pion plan --base origin/main --format nextest)"
+# Inside crates: build the index of the working tree, then plan with it
+cargo pion index
+cargo pion plan --base origin/main --scip target/pion/index.scip
 
-# The whole plan, with the reason for every selected crate
-cargo pion plan --base origin/main --format json
+# API scenarios as well
+cargo pion plan --base origin/main --scip target/pion/index.scip \
+  --scenarios apps/api/tests/scenarios
+
+# Run the selected tests with nextest
+cargo pion run --base origin/main --scip target/pion/index.scip -- --no-fail-fast
 ```
+
+The index describes the working tree, so check out the revision you plan for
+before building it.
+
+### Output formats
+
+`--format` chooses what `plan` prints:
+
+| Format | Output |
+| --- | --- |
+| `text` (default) | Crates, tests and scenarios, with the reason for each |
+| `json` | The whole plan |
+| `nextest` | A filterset for `cargo nextest run -E` |
+| `packages` | The selected crates, one per line |
+| `github-matrix` | `{"include":[{"package":…,"filterset":…}]}` for a GitHub Actions matrix, one job per crate |
+| `scenarios` | The selected scenario files, one per line |
 
 `--deny-uncovered` exits with status 2 when a changed file is covered by no
 rule, for callers that gate a deployment on the plan.
 
 ## How a change spreads
 
+### Between crates
+
 | Changed file | Tests selected |
 | --- | --- |
 | A file inside a crate (`.rs`, `Cargo.toml`, `build.rs`, SQL, fixtures, ...) | That crate, and every workspace crate that depends on it |
-| `Cargo.lock`, the root `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Every crate |
+| `Cargo.lock` | The crates that depend on a package the lockfile now resolves differently |
+| The root `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Every crate |
 | A file no workspace crate owns | None. The file is listed as not covered |
 
 A crate depends on another when its tests are built from it: through normal
 and build dependencies transitively, and through its own dev-dependencies. A
 dev-dependency does not pass on to the crate's dependents.
 
+### Inside a crate (`--scip`)
+
+Each changed line of a `.rs` file is attributed to the definition that
+contains it. From there pion follows references backwards: whatever mentions
+a changed definition is affected, and so on, until it reaches test functions.
+
+| Situation | Rule |
+| --- | --- |
+| A call through `dyn Trait` or a generic | A change to an impl affects everything that refers to the trait method |
+| A trait method's own definition changes | Every impl of it is affected |
+| A struct field or enum variant changes | Everything that refers to the type is affected |
+| A changed line is outside every definition (an import, an attribute, an `impl` header, a macro call) | The crate runs all its tests, and so do its dependents |
+| The file is not in the index (new, deleted, not compiled) | Same |
+| A blank line or comment is added between items | Ignored |
+
+### API scenarios (`--scenarios`)
+
+A scenario file is a list of steps with a `request:` that has a `method:` and
+a `url:` (the format [muon](https://github.com/quantum-box/muon) runs).
+
+- A REST request is matched against the routes registered in the source as
+  `.route("/path", get(handler))`. The scenario is selected when a handler it
+  requests reaches a changed definition.
+- A GraphQL request is matched by name: a top-level field `createFeature` is
+  taken to be served by every method called `create_feature`.
+- A request that matches no route makes the scenario *untraced*: it is
+  selected whenever its crate is affected at all.
+- When the crate under test runs all its tests, all its scenarios run too.
+
+## Checking the selection
+
+Selection from a static graph can miss what the graph does not show: code
+generated by macros, reflection, global state. Measure it:
+
+```bash
+cargo pion plan --base "$BASE" --scip target/pion/index.scip --format json > plan.json
+cargo nextest run --profile ci        # every test, with a JUnit report
+cargo pion audit --plan plan.json --junit target/nextest/ci/junit.xml
+```
+
+`audit` lists the tests that failed in the full run but were not selected,
+and exits with status 1 when there are any.
+
 ## Dependencies
 
 pion runs in CI next to deploy credentials, so its dependencies are kept few
 and well known: `guppy` for the dependency graph, `clap`, `serde`,
-`serde_json`, `camino` and `thiserror`. State the reason when adding one.
+`serde_json`, `camino` and `thiserror`. The SCIP index, `Cargo.lock`, JUnit
+reports and scenario files are read by small readers in this repository
+rather than by additional crates. State the reason when adding a dependency.
 
 ## License
 

@@ -4,12 +4,12 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::workspace::{PackageName, WorkspaceGraph};
 
 /// A path relative to the repository root, with `/` separators.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RepoPath(Utf8PathBuf);
 
