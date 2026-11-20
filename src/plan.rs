@@ -146,8 +146,9 @@ impl<'a> Planner<'a> {
         let mut whole: BTreeMap<PackageName, BTreeSet<Reason>> = BTreeMap::new();
         // Crates whose own files changed in a way that cannot be narrowed.
         let mut origins = BTreeSet::new();
-        // Crates whose changes were all attributed to definitions.
-        let mut narrowed_crates = BTreeSet::new();
+        // Crates with a change attributed to a definition that is not a
+        // test function.
+        let mut production_crates = BTreeSet::new();
         let mut changed_symbols = BTreeSet::new();
         let mut uncovered = Vec::new();
         let lockfile = self.graph.lockfile();
@@ -177,8 +178,15 @@ impl<'a> Planner<'a> {
                 FileKind::RustSource { package } if self.narrowing.is_some() => {
                     match self.attribute(path) {
                         Ok(symbols) => {
+                            let only_tests = symbols.iter().all(|symbol| {
+                                self.narrowing
+                                    .as_ref()
+                                    .is_some_and(|n| n.symbols.test(symbol).is_some())
+                            });
+                            if !only_tests {
+                                production_crates.insert(package.clone());
+                            }
                             changed_symbols.extend(symbols);
-                            narrowed_crates.insert(package.clone());
                         }
                         Err(cause) => {
                             origins.insert(package.clone());
@@ -245,7 +253,7 @@ impl<'a> Planner<'a> {
         }
 
         let scenarios =
-            self.select_scenarios(changes, &whole, &origins, &narrowed_crates, &reached)?;
+            self.select_scenarios(changes, &whole, &origins, &production_crates, &reached)?;
 
         let mut crates = BTreeMap::new();
         for (package, (names, reasons)) in tests {
@@ -321,7 +329,16 @@ impl<'a> Planner<'a> {
         let lines = narrowing.lines.get(path).ok_or_else(not_in_index)?;
         let mut symbols = BTreeSet::new();
         for changed in lines {
-            if let Some(symbol) = narrowing.symbols.definition_at_line(path, changed.line) {
+            let owner = narrowing.symbols.definition_at_line(path, changed.line);
+            // A change between two lines is inside a definition only when
+            // both lines are.
+            let owner = match changed.gap_to {
+                Some(next) => owner.filter(|owner| {
+                    narrowing.symbols.definition_at_line(path, next) == Some(owner)
+                }),
+                None => owner,
+            };
+            if let Some(symbol) = owner {
                 symbols.insert(symbol.clone());
             } else if !is_blank_or_comment(changed) {
                 return Err(FallbackCause::OutsideDefinitions {
@@ -338,7 +355,7 @@ impl<'a> Planner<'a> {
         changes: &ChangeSet,
         whole: &BTreeMap<PackageName, BTreeSet<Reason>>,
         origins: &BTreeSet<PackageName>,
-        narrowed_crates: &BTreeSet<PackageName>,
+        production_crates: &BTreeSet<PackageName>,
         reached: &BTreeMap<SymbolId, SymbolId>,
     ) -> Result<BTreeMap<RepoPath, Vec<ScenarioReason>>, WorkspaceError> {
         if self.scenarios.is_empty() {
@@ -346,8 +363,10 @@ impl<'a> Planner<'a> {
         }
         let changed_paths: BTreeSet<&RepoPath> =
             changes.files().iter().map(|file| &file.path).collect();
-        // Every crate the change touches at all, narrowed or not.
-        let touched: BTreeSet<PackageName> = origins.union(narrowed_crates).cloned().collect();
+        // Every crate the change touches at all, narrowed or not. A crate
+        // whose only changes are inside test functions is left out: a test
+        // is not part of the binary a scenario talks to.
+        let touched: BTreeSet<PackageName> = origins.union(production_crates).cloned().collect();
         let mut affected: BTreeSet<PackageName> =
             self.graph.affected_by(&touched)?.into_keys().collect();
         affected.extend(whole.keys().cloned());
@@ -385,14 +404,14 @@ impl<'a> Planner<'a> {
     }
 }
 
-/// A line added on its own that holds no code. Outside a definition, such a
-/// line changes nothing a test can observe.
+/// Lines added on their own that hold no code. Outside a definition, such
+/// lines change nothing a test can observe.
 fn is_blank_or_comment(changed: &ChangedLine) -> bool {
     let Some(text) = &changed.text else {
         return false;
     };
-    let text = text.trim();
-    changed.addition_only && (text.is_empty() || text.starts_with("//"))
+    let holds_no_code = |line: &str| line.trim().is_empty() || line.trim().starts_with("//");
+    changed.addition_only && text.lines().all(holds_no_code)
 }
 
 impl TestPlan {

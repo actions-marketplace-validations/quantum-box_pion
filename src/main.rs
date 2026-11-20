@@ -1,13 +1,14 @@
-use std::collections::BTreeMap;
-use std::process::{Command, ExitCode};
+use std::collections::{BTreeMap, BTreeSet};
+use std::process::{Command, ExitCode, Stdio};
+use std::time::Instant;
 
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
-use pion::git::{self, Revision};
+use pion::git::{self, Revision, Side};
 use pion::lockfile::Lockfile;
 use pion::scip::Index;
 use pion::{
-    ChangeSet, FallbackCause, Narrowing, Planner, Reason, ReferenceGraph, ScenarioReason,
+    ChangeSet, FallbackCause, Narrowing, Planner, Reason, ReferenceGraph, RepoPath, ScenarioReason,
     Selection, TestPlan, WorkspaceGraph, audit, scenario,
 };
 
@@ -32,6 +33,8 @@ enum Action {
     Index(IndexArgs),
     /// List the failed tests of a full run that a plan did not select
     Audit(AuditArgs),
+    /// Print what would run if given lines changed, one JSON object per line
+    Impact(ImpactArgs),
 }
 
 #[derive(clap::Args)]
@@ -49,9 +52,21 @@ struct Selecting {
     /// a change inside a crate selects only the tests that reach it
     #[arg(long)]
     scip: Option<Utf8PathBuf>,
+    /// Which revision the index was built from. `base` lets one index,
+    /// built once for a commit, serve every change made on top of it
+    #[arg(long, value_enum, default_value_t = Indexed::Head)]
+    scip_revision: Indexed,
     /// A directory of API scenario files to select from; repeatable
     #[arg(long = "scenarios", value_name = "DIR")]
     scenario_dirs: Vec<Utf8PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Indexed {
+    /// The revision given as `--base`
+    Base,
+    /// The working tree
+    Head,
 }
 
 #[derive(clap::Args)]
@@ -94,6 +109,23 @@ struct AuditArgs {
     junit: Utf8PathBuf,
 }
 
+#[derive(clap::Args)]
+struct ImpactArgs {
+    /// Path to the workspace `Cargo.toml`
+    #[arg(long, default_value = "Cargo.toml")]
+    manifest_path: Utf8PathBuf,
+    /// A SCIP index of the working tree (see `cargo pion index`)
+    #[arg(long)]
+    scip: Utf8PathBuf,
+    /// A directory of API scenario files to select from; repeatable
+    #[arg(long = "scenarios", value_name = "DIR")]
+    scenario_dirs: Vec<Utf8PathBuf>,
+    /// Lines to treat as changed, as `path:line` with the path relative to
+    /// the repository root and the line one-based
+    #[arg(required = true, value_name = "PATH:LINE")]
+    lines: Vec<String>,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Format {
     /// Crates, tests and scenarios, with the reasons they were selected
@@ -117,6 +149,7 @@ fn main() -> ExitCode {
         Action::Run(args) => run(&args),
         Action::Index(args) => index(&args),
         Action::Audit(args) => audit_plan(&args),
+        Action::Impact(args) => impact(&args),
     };
     match result {
         Ok(code) => code,
@@ -191,17 +224,74 @@ fn index(args: &IndexArgs) -> Result<ExitCode, Failure> {
     if let Some(directory) = args.output.parent() {
         std::fs::create_dir_all(directory)?;
     }
-    let status = Command::new("rust-analyzer")
+    let log_path = Utf8PathBuf::from(format!("{}.log", args.output));
+    let started = Instant::now();
+    // rust-analyzer reports thousands of diagnostics on a large workspace.
+    // They go to a log file; a summary by kind is printed instead.
+    let output = Command::new("rust-analyzer")
         .arg("scip")
         .arg(workspace)
         .arg("--output")
         .arg(&args.output)
-        .status()?;
-    if !status.success() {
-        return Err("`rust-analyzer scip` failed".into());
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    let log = String::from_utf8_lossy(&output.stderr);
+    std::fs::write(&log_path, log.as_bytes())?;
+    if !output.status.success() {
+        return Err(format!("`rust-analyzer scip` failed; see {log_path}").into());
     }
-    println!("{}", args.output);
+
+    let size = std::fs::metadata(&args.output)?.len();
+    println!(
+        "{} ({} MB, {} s)",
+        args.output,
+        size / 1_000_000,
+        started.elapsed().as_secs()
+    );
+    let diagnostics = summarize_diagnostics(&log);
+    if !diagnostics.is_empty() {
+        println!("rust-analyzer diagnostics (full log: {log_path}):");
+    }
+    for (kind, count) in diagnostics {
+        println!("  {count:>6}  {kind}{}", diagnostic_note(&kind));
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Counts rust-analyzer's `ERROR` and `WARN` lines by message, most frequent
+/// first. The part of a message that names a place or an id is dropped so
+/// that repeats of one problem count together.
+fn summarize_diagnostics(log: &str) -> Vec<(String, usize)> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for line in log.lines() {
+        let message = ["ERROR ", "WARN "]
+            .iter()
+            .find_map(|level| line.split_once(level).map(|(_, message)| message));
+        let Some(message) = message else { continue };
+        let kind = [" def=", " at ", ": ", "("]
+            .iter()
+            .filter_map(|cut| message.find(cut))
+            .min()
+            .map_or(message, |end| &message[..end]);
+        *counts.entry(kind.trim().to_owned()).or_default() += 1;
+    }
+    let mut kinds: Vec<(String, usize)> = counts.into_iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    kinds
+}
+
+/// What a known diagnostic means for selection.
+fn diagnostic_note(kind: &str) -> &'static str {
+    if kind.starts_with("Encountered enclosing definition with no name") {
+        "\n          harmless: an item inside a function body has no named parent; \
+         pion does not read that field"
+    } else if kind.starts_with("Bug: definition") {
+        "\n          a definition generated by a macro has no place in a source file; \
+         references to it cannot be followed"
+    } else {
+        ""
+    }
 }
 
 fn audit_plan(args: &AuditArgs) -> Result<ExitCode, Failure> {
@@ -222,6 +312,95 @@ fn audit_plan(args: &AuditArgs) -> Result<ExitCode, Failure> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Plans for each given line on its own, as if only that line had changed.
+/// Each result also carries the number of crates the crate-level plan would
+/// run, to show what the reference graph saves.
+fn impact(args: &ImpactArgs) -> Result<ExitCode, Failure> {
+    let manifest = args.manifest_path.canonicalize_utf8()?;
+    let manifest_dir = manifest.parent().ok_or("the manifest path has no parent")?;
+    let repository = git::repository_root(manifest_dir)?.canonicalize_utf8()?;
+    let graph = WorkspaceGraph::load(&manifest, &repository)?;
+    let index = Index::decode(&std::fs::read(&args.scip)?)?;
+    let symbols = ReferenceGraph::build(&index, &graph);
+    let (scenarios, scenario_roots) = scenario::discover(
+        &args.scenario_dirs,
+        &repository,
+        &graph,
+        Some(&symbols),
+        |path| std::fs::read_to_string(repository.join(path.as_path())).ok(),
+    )?;
+
+    for target in &args.lines {
+        let (file, line) = target
+            .rsplit_once(':')
+            .ok_or_else(|| format!("`{target}` is not `path:line`"))?;
+        let line: u32 = line.parse()?;
+        let path = RepoPath::parse(file)?;
+        let changes = ChangeSet::classify([path.clone()], &graph);
+        let lines = BTreeMap::from([(
+            path.clone(),
+            vec![git::ChangedLine {
+                line: line.saturating_sub(1),
+                gap_to: None,
+                text: None,
+                addition_only: false,
+            }],
+        )]);
+        let narrowed = Planner::new(&graph)
+            .with_narrowing(Narrowing {
+                symbols: &symbols,
+                lines: &lines,
+            })
+            .with_scenarios(&scenarios, &scenario_roots)
+            .plan(&changes)?;
+        let crate_level = TestPlan::for_changes(&changes, &graph)?;
+
+        let whole = narrowed
+            .crates
+            .values()
+            .filter(|plan| plan.selection == Selection::All)
+            .count();
+        let tests: usize = narrowed
+            .crates
+            .values()
+            .map(|plan| match &plan.selection {
+                Selection::All => 0,
+                Selection::Tests(tests) => tests.len(),
+            })
+            .sum();
+        let definition = symbols
+            .definition_at_line(&path, line.saturating_sub(1))
+            .map(ToString::to_string);
+        let fallbacks: BTreeSet<String> = narrowed
+            .crates
+            .values()
+            .flat_map(|plan| &plan.reasons)
+            .filter_map(|reason| match reason {
+                Reason::FellBack { cause } => Some(describe(&Reason::FellBack {
+                    cause: cause.clone(),
+                })),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "path": path,
+                "line": line,
+                "definition": definition,
+                "crate_level_crates": crate_level.crates.len(),
+                "whole_crates": whole,
+                "narrowed_crates": narrowed.crates.len() - whole,
+                "tests": tests,
+                "scenarios": narrowed.scenarios.len(),
+                "scenarios_total": scenarios.len(),
+                "fallbacks": fallbacks,
+            })
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Reads the workspace and the change, and plans with every input given.
@@ -256,12 +435,28 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
         None => None,
     };
     let lines = match &symbols {
-        Some(_) => git::changed_lines(&repository, &args.base, head)?,
+        Some(_) => {
+            let side = match args.scip_revision {
+                Indexed::Base => Side::Base,
+                Indexed::Head => Side::Head,
+            };
+            git::changed_lines(&repository, &args.base, head, side)?
+        }
         None => BTreeMap::new(),
     };
 
-    let (scenarios, scenario_roots) =
-        scenario::discover(&args.scenario_dirs, &repository, &graph, symbols.as_ref())?;
+    // Routes are read from the same revision the index describes.
+    let read_source = |path: &RepoPath| match args.scip_revision {
+        Indexed::Base => git::file_at(&repository, &args.base, path).ok().flatten(),
+        Indexed::Head => std::fs::read_to_string(repository.join(path.as_path())).ok(),
+    };
+    let (scenarios, scenario_roots) = scenario::discover(
+        &args.scenario_dirs,
+        &repository,
+        &graph,
+        symbols.as_ref(),
+        read_source,
+    )?;
 
     let changes = ChangeSet::classify(paths, &graph);
     let mut planner = Planner::new(&graph).with_scenarios(&scenarios, &scenario_roots);

@@ -63,6 +63,7 @@ impl Fixture {
             &root,
             &graph,
             Some(&symbols),
+            |path| std::fs::read_to_string(root.join(path.as_path())).ok(),
         )
         .expect("scenarios load");
         Self {
@@ -80,6 +81,7 @@ impl Fixture {
             file,
             vec![ChangedLine {
                 line,
+                gap_to: None,
                 text: Some(needle.to_owned()),
                 addition_only: false,
             }],
@@ -236,6 +238,7 @@ fn an_added_blank_line_between_items_selects_nothing() {
         "core/src/token.rs",
         vec![ChangedLine {
             line: between_items,
+            gap_to: None,
             text: Some(String::new()),
             addition_only: true,
         }],
@@ -315,4 +318,60 @@ fn a_lockfile_package_the_graph_does_not_know_selects_every_crate() {
         selected(&plan),
         ["fx-api: *", "fx-auth: *", "fx-core: *", "fx-tools: *"]
     );
+}
+
+/// A change that has no line of its own in the indexed revision: it sits
+/// between two lines.
+fn gap(after_line: u32, added: Option<&str>) -> ChangedLine {
+    ChangedLine {
+        line: after_line,
+        gap_to: Some(after_line + 1),
+        text: added.map(str::to_owned),
+        addition_only: added.is_some(),
+    }
+}
+
+#[test]
+fn lines_inserted_inside_a_function_change_that_function() {
+    let fixture = Fixture::load();
+    // Planned against an index of the base revision: the new lines go
+    // between two lines of `is_expired`.
+    let signature = line_of("core/src/token.rs", "pub fn is_expired");
+    let plan = fixture.plan_lines(
+        "core/src/token.rs",
+        vec![gap(signature, Some("        let limit = LIMIT;"))],
+    );
+
+    assert_eq!(
+        selected(&plan),
+        [
+            "fx-auth: tests::rejects_expired_token",
+            "fx-core: token::tests::token_roundtrip",
+        ]
+    );
+}
+
+#[test]
+fn an_item_inserted_between_items_falls_back_to_the_crate() {
+    let fixture = Fixture::load();
+    // After the closing brace of `struct Token`, before `impl Token`.
+    let between_items = line_of("core/src/token.rs", "impl Token {") - 2;
+    let plan = fixture.plan_lines(
+        "core/src/token.rs",
+        vec![gap(between_items, Some("pub fn brand_new() {}"))],
+    );
+
+    assert_eq!(selected(&plan), ["fx-api: *", "fx-auth: *", "fx-core: *"]);
+}
+
+#[test]
+fn a_comment_inserted_between_items_selects_nothing() {
+    let fixture = Fixture::load();
+    let between_items = line_of("core/src/token.rs", "impl Token {") - 2;
+    let plan = fixture.plan_lines(
+        "core/src/token.rs",
+        vec![gap(between_items, Some("\n// Tokens expire.\n"))],
+    );
+
+    assert!(plan.crates.is_empty());
 }

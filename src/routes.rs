@@ -13,8 +13,6 @@
 
 use std::collections::BTreeSet;
 
-use camino::Utf8Path;
-
 use crate::change::RepoPath;
 use crate::scip::Position;
 use crate::symbols::{ReferenceGraph, SymbolId};
@@ -101,12 +99,16 @@ pub struct RouteTable {
 }
 
 impl RouteTable {
-    /// Reads the routes of every indexed file under `repository`. Files that
-    /// cannot be read (deleted since the index was built) are skipped.
-    pub fn from_sources(repository: &Utf8Path, symbols: &ReferenceGraph) -> Self {
+    /// Reads the routes of every indexed file. `read` returns a file's text
+    /// as it was when the index was built, or `None` when it cannot be read;
+    /// such a file is skipped.
+    pub fn from_sources(
+        symbols: &ReferenceGraph,
+        read: impl Fn(&RepoPath) -> Option<String>,
+    ) -> Self {
         let mut table = Self::default();
         for path in symbols.paths() {
-            let Ok(source) = std::fs::read_to_string(repository.join(path.as_path())) else {
+            let Some(source) = read(path) else {
                 continue;
             };
             if source.contains(".route(") {

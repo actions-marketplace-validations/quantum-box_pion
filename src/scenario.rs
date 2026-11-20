@@ -274,19 +274,21 @@ const SCENARIO_SUFFIXES: [&str; 3] = [".yaml", ".yml", ".scenario.md"];
 /// handlers. Returns the scenarios and the directories as repository paths.
 ///
 /// Without a reference graph no request can be tied to a handler, so every
-/// scenario is untraced.
+/// scenario is untraced. `read_source` returns a source file's text as it was
+/// when the graph's index was built.
 pub fn discover(
     directories: &[Utf8PathBuf],
     repository: &Utf8Path,
     graph: &WorkspaceGraph,
     symbols: Option<&ReferenceGraph>,
+    read_source: impl Fn(&RepoPath) -> Option<String>,
 ) -> Result<(Vec<Scenario>, Vec<RepoPath>), ScenarioError> {
     if directories.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
     let empty = ReferenceGraph::default();
     let symbols = symbols.unwrap_or(&empty);
-    let routes = RouteTable::from_sources(repository, symbols);
+    let routes = RouteTable::from_sources(symbols, read_source);
     let repo_path = |path: &Utf8Path| -> Result<RepoPath, ScenarioError> {
         let relative = path
             .strip_prefix(repository)

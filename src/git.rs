@@ -84,27 +84,39 @@ pub fn changed_paths(
         .collect()
 }
 
-/// One line of the head revision that a change touched.
+/// Which revision's line numbers a change is expressed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    /// The revision compared against. A deleted file still has lines here.
+    Base,
+    /// The revision planned for. A new file has lines here.
+    Head,
+}
+
+/// One place a change touched, in the line numbers of one [`Side`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangedLine {
-    /// Zero-based line number in the head revision.
+    /// Zero-based line number.
     pub line: u32,
-    /// The line's text when the change wrote it; `None` for a line that only
-    /// sits next to a deletion.
+    /// When set, the change has no line of its own on this side: it sits
+    /// between `line` and this line. That is where removed lines used to be
+    /// on the head side, and where added lines will go on the base side.
+    pub gap_to: Option<u32>,
+    /// The text the change added here, when it added any.
     pub text: Option<String>,
     /// The hunk added lines and removed none.
     pub addition_only: bool,
 }
 
-/// The changed lines of each file that still exists in the head revision.
+/// The places each file changed, in the line numbers of `side`.
 ///
-/// A deletion has no line of its own in the head revision, so the lines on
-/// both sides of it are reported instead. Files git does not track yet have
-/// no entry.
+/// Files that do not exist on that side have no entry, and neither do files
+/// git does not track yet.
 pub fn changed_lines(
     repository: &Utf8Path,
     base: &Revision,
     head: Option<&Revision>,
+    side: Side,
 ) -> Result<BTreeMap<RepoPath, Vec<ChangedLine>>, GitError> {
     let mut diff = vec![
         "-c",
@@ -120,73 +132,108 @@ pub fn changed_lines(
         diff.push(&head.0);
     }
     diff.push("--");
-    parse_unified_diff(&run(repository, &diff)?)
+    parse_unified_diff(&run(repository, &diff)?, side)
 }
 
-fn parse_unified_diff(diff: &str) -> Result<BTreeMap<RepoPath, Vec<ChangedLine>>, GitError> {
-    let mut files: BTreeMap<RepoPath, Vec<ChangedLine>> = BTreeMap::new();
-    let mut current: Option<RepoPath> = None;
-    // The next added line's number and whether its hunk only adds.
-    let mut next_line = 0;
-    let mut addition_only = false;
-    let mut in_hunk = false;
-    for line in diff.lines() {
-        if let Some(path) = line.strip_prefix("+++ ") {
-            in_hunk = false;
-            current = match path.strip_prefix("b/") {
-                Some(path) => Some(RepoPath::parse(path)?),
-                // `+++ /dev/null`: the file was deleted.
-                None => None,
-            };
-            if let Some(path) = &current {
-                files.entry(path.clone()).or_default();
-            }
-            continue;
-        }
-        if line.starts_with("diff --git ") {
-            in_hunk = false;
-            current = None;
-            continue;
-        }
-        let Some(path) = &current else { continue };
-        let lines = files.entry(path.clone()).or_default();
-        if let Some(header) = line.strip_prefix("@@ ") {
-            let Some((removed, start, added)) = parse_hunk_header(header) else {
-                continue;
-            };
-            in_hunk = true;
-            addition_only = removed == 0;
-            // Hunk line numbers are one-based.
-            next_line = start.saturating_sub(1);
-            if added == 0 {
-                // Lines were only removed, after head line `start`.
-                for line in [start.saturating_sub(1), start] {
-                    lines.push(ChangedLine {
-                        line,
-                        text: None,
-                        addition_only: false,
-                    });
-                }
-            }
-            continue;
-        }
-        if !in_hunk {
-            continue;
-        }
-        if let Some(text) = line.strip_prefix('+') {
-            lines.push(ChangedLine {
-                line: next_line,
-                text: Some(text.to_owned()),
+/// One `@@ -a,b +c,d @@` block of a diff. Starts are one-based.
+#[derive(Debug, Default)]
+struct Hunk {
+    old_start: u32,
+    old_count: u32,
+    new_start: u32,
+    new_count: u32,
+    added: Vec<String>,
+}
+
+impl Hunk {
+    fn changed_lines(self, side: Side) -> Vec<ChangedLine> {
+        let (start, count) = match side {
+            Side::Base => (self.old_start, self.old_count),
+            Side::Head => (self.new_start, self.new_count),
+        };
+        let addition_only = self.old_count == 0;
+        if count == 0 {
+            // Nothing of this hunk exists on this side. A zero-count start
+            // names the line the change comes after.
+            let text =
+                (side == Side::Base && !self.added.is_empty()).then(|| self.added.join("\n"));
+            return vec![ChangedLine {
+                line: start.saturating_sub(1),
+                gap_to: Some(start),
+                text,
                 addition_only,
-            });
-            next_line += 1;
+            }];
+        }
+        let mut added = self.added.into_iter();
+        (0..count)
+            .map(|offset| ChangedLine {
+                line: start.saturating_sub(1) + offset,
+                gap_to: None,
+                text: match side {
+                    Side::Head => added.next(),
+                    Side::Base => None,
+                },
+                addition_only,
+            })
+            .collect()
+    }
+}
+
+fn parse_unified_diff(
+    diff: &str,
+    side: Side,
+) -> Result<BTreeMap<RepoPath, Vec<ChangedLine>>, GitError> {
+    let mut files: BTreeMap<RepoPath, Vec<ChangedLine>> = BTreeMap::new();
+    // The file on `side` the current hunks belong to.
+    let mut current: Option<RepoPath> = None;
+    let mut hunk: Option<Hunk> = None;
+    let mut close = |hunk: &mut Option<Hunk>, current: &Option<RepoPath>| {
+        if let (Some(hunk), Some(path)) = (hunk.take(), current) {
+            files
+                .entry(path.clone())
+                .or_default()
+                .extend(hunk.changed_lines(side));
+        }
+    };
+    let (marker, prefix) = match side {
+        Side::Base => ("--- ", "a/"),
+        Side::Head => ("+++ ", "b/"),
+    };
+    let mut in_header = false;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            close(&mut hunk, &current);
+            current = None;
+            in_header = true;
+            continue;
+        }
+        if in_header {
+            if let Some(path) = line.strip_prefix(marker) {
+                // `/dev/null` has no prefix: the file is absent on this side.
+                current = match path.strip_prefix(prefix) {
+                    Some(path) => Some(RepoPath::parse(path)?),
+                    None => None,
+                };
+            }
+            if !line.starts_with("@@ ") {
+                continue;
+            }
+            in_header = false;
+        }
+        if let Some(header) = line.strip_prefix("@@ ") {
+            close(&mut hunk, &current);
+            hunk = parse_hunk_header(header);
+        } else if let (Some(hunk), Some(text)) = (&mut hunk, line.strip_prefix('+')) {
+            hunk.added.push(text.to_owned());
         }
     }
+    close(&mut hunk, &current);
+    drop(close);
     Ok(files)
 }
 
-/// Reads `-a,b +c,d @@ …` as `(b, c, d)`. A missing count is 1.
-fn parse_hunk_header(header: &str) -> Option<(u32, u32, u32)> {
+/// Reads `-a,b +c,d @@ …`. A missing count is 1.
+fn parse_hunk_header(header: &str) -> Option<Hunk> {
     let mut parts = header.split(' ');
     let old = parts.next()?.strip_prefix('-')?;
     let new = parts.next()?.strip_prefix('+')?;
@@ -196,9 +243,15 @@ fn parse_hunk_header(header: &str) -> Option<(u32, u32, u32)> {
             None => Some((text.parse().ok()?, 1)),
         }
     };
-    let (_, removed) = span(old)?;
-    let (start, added) = span(new)?;
-    Some((removed, start, added))
+    let (old_start, old_count) = span(old)?;
+    let (new_start, new_count) = span(new)?;
+    Some(Hunk {
+        old_start,
+        old_count,
+        new_start,
+        new_count,
+        added: Vec::new(),
+    })
 }
 
 /// The text of `path` at `revision`, or `None` when it does not exist there.
@@ -230,9 +283,7 @@ fn run(dir: &Utf8Path, args: &[&str]) -> Result<String, GitError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_diff_lists_added_lines_and_the_lines_around_a_deletion() {
-        let diff = "\
+    const DIFF: &str = "\
 diff --git a/src/lib.rs b/src/lib.rs
 index 111..222 100644
 --- a/src/lib.rs
@@ -253,23 +304,55 @@ deleted file mode 100644
 @@ -1 +0,0 @@
 -fn gone() {}
 ";
-        let files = parse_unified_diff(diff).expect("valid diff");
-        let line = |line, text: Option<&str>, addition_only| ChangedLine {
+
+    fn line(
+        line: u32,
+        gap_to: Option<u32>,
+        text: Option<&str>,
+        addition_only: bool,
+    ) -> ChangedLine {
+        ChangedLine {
             line,
+            gap_to,
             text: text.map(str::to_owned),
             addition_only,
-        };
+        }
+    }
 
+    #[test]
+    fn the_head_side_lists_added_lines_and_the_gap_a_deletion_left() {
+        let files = parse_unified_diff(DIFF, Side::Head).expect("valid diff");
+
+        // `gone.rs` does not exist in the head revision.
         assert_eq!(files.len(), 1);
         assert_eq!(
             files[&RepoPath::parse("src/lib.rs").unwrap()],
             [
-                line(3, Some("    let a = 1;"), true),
-                line(4, Some("    let b = 2;"), true),
-                line(11, Some("new"), false),
-                line(20, None, false),
-                line(21, None, false),
+                line(3, None, Some("    let a = 1;"), true),
+                line(4, None, Some("    let b = 2;"), true),
+                line(11, None, Some("new"), false),
+                line(20, Some(21), None, false),
             ]
+        );
+    }
+
+    #[test]
+    fn the_base_side_lists_removed_lines_and_the_gap_an_addition_fills() {
+        let files = parse_unified_diff(DIFF, Side::Base).expect("valid diff");
+
+        assert_eq!(
+            files[&RepoPath::parse("src/lib.rs").unwrap()],
+            [
+                line(2, Some(3), Some("    let a = 1;\n    let b = 2;"), true),
+                line(9, None, None, false),
+                line(10, None, None, false),
+                line(19, None, None, false),
+            ]
+        );
+        // The deleted file still has its line in the base revision.
+        assert_eq!(
+            files[&RepoPath::parse("gone.rs").unwrap()],
+            [line(0, None, None, false)]
         );
     }
 

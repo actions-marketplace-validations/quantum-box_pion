@@ -149,7 +149,13 @@ pub struct TestCase {
 #[derive(Debug, Clone)]
 struct Definition {
     symbol: SymbolId,
+    /// Where the name is written.
+    name: Range,
     /// The whole item: attributes, signature and body.
+    ///
+    /// An item written inside a function that carries an attribute macro
+    /// (a mock declared in a `#[tokio::test]` function) gets the range of
+    /// that whole function, so several definitions can share one range.
     item: Range,
 }
 
@@ -213,7 +219,11 @@ impl ReferenceGraph {
             if occurrence.is_definition {
                 let symbol = SymbolId::parse(&occurrence.symbol);
                 if let (Some(symbol), Some(item)) = (symbol, occurrence.enclosing) {
-                    definitions.push(Definition { symbol, item });
+                    definitions.push(Definition {
+                        symbol,
+                        name: occurrence.range,
+                        item,
+                    });
                 }
             } else {
                 mentions.push(occurrence);
@@ -267,11 +277,21 @@ impl ReferenceGraph {
                 stack.push(definition);
             }
             close_ended(&mut stack, position);
-            let (Some(mention), Some(owner)) = (mention, stack.last()) else {
+            let (Some(mention), Some(innermost)) = (mention, stack.last()) else {
                 // The end of the file, or a mention outside every
                 // definition, such as a `use`.
                 continue;
             };
+            // Definitions that share the innermost range are one function and
+            // the items written inside it. Those items cannot be named from
+            // outside the function, so a mention anywhere in the range counts
+            // as the function's own: the definition whose name comes first.
+            let owner = stack
+                .iter()
+                .rev()
+                .take_while(|definition| definition.item == innermost.item)
+                .min_by_key(|definition| definition.name.start)
+                .unwrap_or(innermost);
             if is_test_attribute(&mention.symbol) {
                 self.tests.insert(
                     owner.symbol.clone(),
@@ -351,13 +371,22 @@ impl ReferenceGraph {
         self.files.contains_key(path)
     }
 
-    /// The innermost definition whose item spans `line` (zero-based).
+    /// The definition a change on `line` (zero-based) belongs to: the
+    /// innermost one whose item spans the line. When several share that
+    /// range, it is the one whose name comes first, the function the others
+    /// are written inside.
     pub fn definition_at_line(&self, path: &RepoPath, line: u32) -> Option<&SymbolId> {
         let file = self.files.get(path)?;
-        file.definitions
-            .iter()
-            .rev()
-            .find(|definition| definition.item.contains_line(line))
+        let spanning = || {
+            file.definitions
+                .iter()
+                .rev()
+                .filter(move |definition| definition.item.contains_line(line))
+        };
+        let innermost = spanning().next()?;
+        spanning()
+            .filter(|definition| definition.item == innermost.item)
+            .min_by_key(|definition| definition.name.start)
             .map(|definition| &definition.symbol)
     }
 

@@ -35,6 +35,19 @@ history of full test runs. Keep running every test somewhere (see
 [Checking the selection](#checking-the-selection)) and do not gate a release
 on pion alone.
 
+Measured on a workspace of 172 crates and about 17,000 tests, by asking what
+a change to each of 300 random lines of code would select:
+
+| | |
+| --- | --- |
+| Changes that could be narrowed | 295 of 300 |
+| Tests selected for a change in non-test code | median 6, 75th percentile 77, 90th percentile 347, worst case about 5,000 |
+| Crates the crate-level plan would run in full | median 6 |
+| API scenarios selected | median 46 of 178 |
+
+The 46 scenarios are the ones with a request that could not be tied to a
+handler; they run whenever their crate is affected.
+
 ## Install
 
 ```bash
@@ -66,8 +79,40 @@ cargo pion plan --base origin/main --scip target/pion/index.scip \
 cargo pion run --base origin/main --scip target/pion/index.scip -- --no-fail-fast
 ```
 
-The index describes the working tree, so check out the revision you plan for
-before building it.
+### Which revision to index
+
+Building the index is the slow part: rust-analyzer analyses the whole
+workspace, and there is no incremental mode. On a workspace of 172 crates it
+took 26 minutes and 19 GB of memory, and the index was 344 MB. Planning with
+that index takes a few seconds.
+
+So build the index once per commit of the main branch, in CI, and plan every
+change against the index of its base:
+
+```bash
+# In CI, for each commit on main: build and store the index
+cargo pion index --output index.scip
+
+# For a change: fetch the index of the merge base, then
+cargo pion plan --base "$MERGE_BASE" --scip index.scip --scip-revision base
+```
+
+With `--scip-revision base` a changed line is attributed to the definition
+that held it before the change. Code that is new in the change is reached
+through the existing lines that had to change to call it; a new item added
+between existing items falls back to the whole crate.
+
+The default, `--scip-revision head`, expects an index of the working tree.
+
+### What would run if this line changed
+
+```bash
+cargo pion impact --scip target/pion/index.scip crates/auth/src/token.rs:42
+```
+
+prints one JSON object per `path:line` with the number of crates, tests and
+scenarios a change there selects, next to what the crate-level plan would
+run. Use it to see how far a change to a given function spreads.
 
 ### Output formats
 
@@ -113,6 +158,7 @@ a changed definition is affected, and so on, until it reaches test functions.
 | A struct field or enum variant changes | Everything that refers to the type is affected |
 | A changed line is outside every definition (an import, an attribute, an `impl` header, a macro call) | The crate runs all its tests, and so do its dependents |
 | The file is not in the index (new, deleted, not compiled) | Same |
+| An item is defined inside a function body (a mock in a test) | It belongs to that function: it cannot be named from outside |
 | A blank line or comment is added between items | Ignored |
 
 ### API scenarios (`--scenarios`)
