@@ -228,7 +228,6 @@ fn parse_unified_diff(
         }
     }
     close(&mut hunk, &current);
-    drop(close);
     Ok(files)
 }
 
