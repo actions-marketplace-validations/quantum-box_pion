@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use rustc_hir as hir;
+use rustc_hir::attrs::AttributeKind;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::intravisit::{self, Visitor};
@@ -204,7 +205,14 @@ impl<'tcx> Collector<'tcx> {
         let file = local_path(&start.file.name)?;
         let mut first = start.line;
         for attribute in self.tcx.hir_attrs(hir_id) {
-            let span = attribute.span();
+            // Only some attributes keep a span once the compiler has parsed
+            // them. A line of one that does not is outside the item's range,
+            // and a change there falls back to the whole crate.
+            let span = match attribute {
+                hir::Attribute::Unparsed(item) => item.span,
+                hir::Attribute::Parsed(AttributeKind::DocComment { span, .. }) => *span,
+                _ => continue,
+            };
             if span.from_expansion() || span.is_dummy() {
                 continue;
             }

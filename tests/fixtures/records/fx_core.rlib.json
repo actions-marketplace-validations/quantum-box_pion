@@ -1,5 +1,6 @@
 {
 "package":"fx-core",
+"record_ms":0,
 "definitions":[
 {"id":"fx_core::config::Limit","name":"Limit","callable":false,"file":"core/src/config.rs","first_line":1,"last_line":1},
 {"id":"fx_core::config::{impl#0}","name":"{impl#0}","callable":false,"file":"core/src/config.rs","first_line":3,"last_line":7},

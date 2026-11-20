@@ -1,5 +1,6 @@
 {
 "package":"fx-tools",
+"record_ms":0,
 "definitions":[
 {"id":"fx_tools::tools","name":"tools","callable":true,"file":"tools/src/lib.rs","first_line":1,"last_line":1}
 ],

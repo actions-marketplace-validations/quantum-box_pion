@@ -1,5 +1,6 @@
 {
 "package":"fx-api",
+"record_ms":0,
 "definitions":[
 {"id":"fx_api::router::Handler","name":"Handler","callable":false,"file":"api/src/router.rs","first_line":4,"last_line":4},
 {"id":"fx_api::router::MethodRouter","name":"MethodRouter","callable":false,"file":"api/src/router.rs","first_line":6,"last_line":6},

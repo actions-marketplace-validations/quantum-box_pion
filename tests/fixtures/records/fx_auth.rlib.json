@@ -1,5 +1,6 @@
 {
 "package":"fx-auth",
+"record_ms":0,
 "definitions":[
 {"id":"fx_auth::repo::UserRepository","name":"UserRepository","callable":false,"file":"auth/src/repo.rs","first_line":1,"last_line":7},
 {"id":"fx_auth::repo::MemoryRepository","name":"MemoryRepository","callable":false,"file":"auth/src/repo.rs","first_line":9,"last_line":9},

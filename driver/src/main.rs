@@ -27,9 +27,18 @@ struct Recorder;
 impl Callbacks for Recorder {
     fn after_analysis<'tcx>(&mut self, _compiler: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
         if let Some(directory) = std::env::var_os("PION_REFS_DIR") {
-            if let Err(error) = record::write(tcx, directory.as_ref()) {
-                // Recording must never break the build it rides on.
-                eprintln!("pion-rustc: could not write references: {error}");
+            // Recording must never break the build it rides on: neither an
+            // I/O error nor a panic inside the compiler's own queries.
+            let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                record::write(tcx, directory.as_ref())
+            }));
+            match written {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("pion-rustc: could not write references: {error}"),
+                Err(_) => eprintln!(
+                    "pion-rustc: recording references panicked for crate `{}`; no record was written",
+                    tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE)
+                ),
             }
         }
         Compilation::Continue
