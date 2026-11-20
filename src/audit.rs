@@ -54,6 +54,62 @@ pub fn read_junit(xml: &str) -> Vec<Outcome> {
     outcomes
 }
 
+/// Reads the output of `cargo test` (libtest), as found in a CI job log.
+///
+/// ```text
+///      Running unittests src/lib.rs (target/debug/deps/fx_auth-0a1b2c3d4e5f6789)
+/// test tests::creates_user ... ok
+/// test tests::rejects_expired_token ... FAILED
+/// ```
+///
+/// The crate comes from the test binary's file name, where cargo writes `_`
+/// for `-`; [`TestPlan::selects`] compares crate names with that in mind.
+/// Anything a log viewer puts before these lines (a job name, a timestamp)
+/// is ignored. An integration test binary is named after its file, not its
+/// crate, so its failures are reported under that name.
+pub fn read_libtest(log: &str) -> Vec<Outcome> {
+    let mut outcomes = Vec::new();
+    let mut package = String::new();
+    for line in log.lines() {
+        if let Some((_, binary)) = line.split_once("Running ") {
+            if let Some(name) = test_binary_name(binary) {
+                package = name;
+            }
+            continue;
+        }
+        let Some((_, result)) = line.split_once("test ") else {
+            continue;
+        };
+        let Some((test, verdict)) = result.split_once(" ... ") else {
+            continue;
+        };
+        let failed = match verdict.trim() {
+            "ok" => false,
+            "FAILED" => true,
+            _ => continue,
+        };
+        // `test path - should panic ... ok` names the test before the ` - `.
+        let test = test.split(" - ").next().unwrap_or(test).trim();
+        if !test.is_empty() && !test.contains(' ') {
+            outcomes.push(Outcome {
+                package: package.clone(),
+                test: test.to_owned(),
+                failed,
+            });
+        }
+    }
+    outcomes
+}
+
+/// `fx_auth` from `unittests src/lib.rs (target/debug/deps/fx_auth-0a1b2c3d)`.
+fn test_binary_name(running: &str) -> Option<String> {
+    let path = running.rsplit_once('(')?.1.split(')').next()?;
+    let file = path.rsplit(['/', '\\']).next()?;
+    let (name, hash) = file.rsplit_once('-')?;
+    let hash = hash.trim_end_matches(".exe");
+    (!name.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit())).then(|| name.to_owned())
+}
+
 /// The value of `name="…"` in an opening tag, with XML entities decoded.
 fn attribute(tag: &str, name: &str) -> Option<String> {
     let mut search = tag;
@@ -120,6 +176,36 @@ mod tests {
                 outcome("fx-auth", "tests::creates_user", false),
                 outcome("fx-auth", "tests::rejects_expired_token", true),
                 outcome("fx-auth", "sign_up_flow", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_cargo_test_output_from_a_job_log() {
+        let log = "\
+test-auth\tRun tests\t2026-11-20T12:00:00.0000000Z      Running unittests src/lib.rs (target/debug/deps/fx_auth-0a1b2c3d4e5f6789)
+test-auth\tRun tests\t2026-11-20T12:00:01.0000000Z running 3 tests
+test-auth\tRun tests\t2026-11-20T12:00:01.0000000Z test tests::creates_user ... ok
+test-auth\tRun tests\t2026-11-20T12:00:01.0000000Z test tests::rejects_expired_token ... FAILED
+test-auth\tRun tests\t2026-11-20T12:00:01.0000000Z test tests::panics - should panic ... ok
+test-auth\tRun tests\t2026-11-20T12:00:01.0000000Z test tests::slow ... ignored
+test-auth\tRun tests\t2026-11-20T12:00:02.0000000Z test result: FAILED. 2 passed; 1 failed; 1 ignored
+test-auth\tRun tests\t2026-11-20T12:00:03.0000000Z      Running tests/flow.rs (target/debug/deps/flow-fedcba9876543210)
+test-auth\tRun tests\t2026-11-20T12:00:03.0000000Z test sign_up_flow ... ok
+";
+        let outcome = |package: &str, test: &str, failed| Outcome {
+            package: package.into(),
+            test: test.into(),
+            failed,
+        };
+
+        assert_eq!(
+            read_libtest(log),
+            [
+                outcome("fx_auth", "tests::creates_user", false),
+                outcome("fx_auth", "tests::rejects_expired_token", true),
+                outcome("fx_auth", "tests::panics", false),
+                outcome("flow", "sign_up_flow", false),
             ]
         );
     }

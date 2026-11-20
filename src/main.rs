@@ -104,9 +104,12 @@ struct AuditArgs {
     /// A plan written by `cargo pion plan --format json`
     #[arg(long)]
     plan: Utf8PathBuf,
-    /// The JUnit report of a run of every test
+    /// A JUnit report of a run of every test (cargo-nextest writes one)
     #[arg(long)]
-    junit: Utf8PathBuf,
+    junit: Vec<Utf8PathBuf>,
+    /// A log with the output of `cargo test`, such as a CI job log
+    #[arg(long)]
+    libtest: Vec<Utf8PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -296,7 +299,18 @@ fn diagnostic_note(kind: &str) -> &'static str {
 
 fn audit_plan(args: &AuditArgs) -> Result<ExitCode, Failure> {
     let plan: TestPlan = serde_json::from_str(&std::fs::read_to_string(&args.plan)?)?;
-    let outcomes = audit::read_junit(&std::fs::read_to_string(&args.junit)?);
+    if args.junit.is_empty() && args.libtest.is_empty() {
+        return Err("give the results of a full run with --junit or --libtest".into());
+    }
+    let mut outcomes = Vec::new();
+    for path in &args.junit {
+        outcomes.extend(audit::read_junit(&std::fs::read_to_string(path)?));
+    }
+    for path in &args.libtest {
+        // CI logs can hold bytes that are not UTF-8.
+        let log = String::from_utf8_lossy(&std::fs::read(path)?).into_owned();
+        outcomes.extend(audit::read_libtest(&log));
+    }
     let failed = outcomes.iter().filter(|outcome| outcome.failed).count();
     let misses = audit::missed(&plan, &outcomes);
     println!(

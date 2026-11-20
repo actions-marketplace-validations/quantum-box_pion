@@ -189,6 +189,15 @@ cargo pion audit --plan plan.json --junit target/nextest/ci/junit.xml
 `audit` lists the tests that failed in the full run but were not selected,
 and exits with status 1 when there are any.
 
+When the full run uses `cargo test` instead of nextest, pass its output with
+`--libtest`. A CI job log works as it is; with GitHub Actions the failed jobs
+are enough, since only failures can be misses:
+
+```bash
+gh run view "$RUN_ID" --log-failed > failed.log
+cargo pion audit --plan plan.json --libtest failed.log
+```
+
 ## Dependencies
 
 pion runs in CI next to deploy credentials, so its dependencies are kept few

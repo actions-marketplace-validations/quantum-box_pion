@@ -424,11 +424,13 @@ impl TestPlan {
         Planner::new(graph).plan(changes)
     }
 
-    /// Whether the plan runs `test` of `package`.
+    /// Whether the plan runs `test` of `package`. The crate name may be
+    /// written with `_` for `-`, as cargo names test binaries.
     pub fn selects(&self, package: &str, test: &str) -> bool {
+        let same_crate = |name: &str| name.replace('-', "_") == package.replace('-', "_");
         self.crates
             .iter()
-            .find(|(name, _)| name.as_str() == package)
+            .find(|(name, _)| same_crate(name.as_str()))
             .is_some_and(|(_, plan)| match &plan.selection {
                 Selection::All => true,
                 Selection::Tests(names) => names.iter().any(|name| name.as_str() == test),
