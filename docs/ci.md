@@ -56,9 +56,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: quantum-box/pion@f4072542640f40b13136c84b8c3895d0d450bdf4 # v0.1.1
+      - uses: quantum-box/pion@59162972b0baf26cc62d28154c5e6637715b673d # v0.1.2
         with:
-          version: v0.1.1
+          version: v0.1.2
       # Restore the records the base revision's run saved, into ./pion-refs.
       # How they are stored (an artifact, a cache, a bucket) is up to the
       # workflow; pion only reads the directory.
@@ -103,10 +103,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: quantum-box/pion@f4072542640f40b13136c84b8c3895d0d450bdf4 # v0.1.1
+      - uses: quantum-box/pion@59162972b0baf26cc62d28154c5e6637715b673d # v0.1.2
         id: pion
         with:
-          version: v0.1.1
+          version: v0.1.2
           rustc-nightly: nightly-2026-06-04
       - run: cargo check --workspace --all-targets
         env:
