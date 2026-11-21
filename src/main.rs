@@ -39,6 +39,8 @@ enum Cargo {
 enum Action {
     /// Print which tests to run for the changes since a revision
     Plan(PlanArgs),
+    /// Print a plan saved with `plan --format json` in another format
+    Render(RenderArgs),
     /// Run the selected tests with cargo-nextest
     Run(RunArgs),
     /// Build the index `plan --scip` reads, with rust-analyzer
@@ -100,6 +102,15 @@ struct PlanArgs {
     /// Exit with status 2 when a changed file is covered by no rule
     #[arg(long)]
     deny_uncovered: bool,
+}
+
+#[derive(clap::Args)]
+struct RenderArgs {
+    /// A plan written by `cargo pion plan --format json`
+    #[arg(long)]
+    plan: Utf8PathBuf,
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
 }
 
 #[derive(clap::Args)]
@@ -180,6 +191,7 @@ fn main() -> ExitCode {
     let Cargo::Pion(action) = Cargo::parse();
     let result = match action {
         Action::Plan(args) => plan(&args),
+        Action::Render(args) => render(&args),
         Action::Run(args) => run(&args),
         Action::Index(args) => index(&args),
         Action::Audit(args) => audit_plan(&args),
@@ -196,8 +208,29 @@ fn main() -> ExitCode {
 
 fn plan(args: &PlanArgs) -> Result<ExitCode, Failure> {
     let (changes, plan) = select(&args.selecting)?;
-    match args.format {
-        Format::Json => say!("{}", serde_json::to_string_pretty(&plan)?),
+    print_plan(&plan, args.format, Some(changes.files().len()))?;
+    if args.deny_uncovered && !plan.uncovered.is_empty() {
+        return Ok(ExitCode::from(2));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Planning reads the whole reference graph, so a caller that wants several
+/// formats plans once, saves the plan as JSON and renders the rest from it.
+fn render(args: &RenderArgs) -> Result<ExitCode, Failure> {
+    let plan: TestPlan = serde_json::from_str(&std::fs::read_to_string(&args.plan)?)?;
+    print_plan(&plan, args.format, None)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `changed_files` is known while planning and not kept in a saved plan.
+fn print_plan(
+    plan: &TestPlan,
+    format: Format,
+    changed_files: Option<usize>,
+) -> Result<(), Failure> {
+    match format {
+        Format::Json => say!("{}", serde_json::to_string_pretty(plan)?),
         Format::Nextest => match plan.nextest_filterset() {
             Some(filterset) => say!("{filterset}"),
             None => eprintln!("no test is affected"),
@@ -235,12 +268,9 @@ fn plan(args: &PlanArgs) -> Result<ExitCode, Failure> {
                 say!("{}", arguments.join(" "));
             }
         }
-        Format::Text => print_text(&changes, &plan),
+        Format::Text => print_text(changed_files, plan),
     }
-    if args.deny_uncovered && !plan.uncovered.is_empty() {
-        return Ok(ExitCode::from(2));
-    }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn run(args: &RunArgs) -> Result<ExitCode, Failure> {
@@ -573,10 +603,10 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
     Ok((changes, plan))
 }
 
-fn print_text(changes: &ChangeSet, plan: &TestPlan) {
+fn print_text(changed_files: Option<usize>, plan: &TestPlan) {
+    let changed = changed_files.map_or(String::new(), |count| format!("{count} changed file(s), "));
     say!(
-        "{} changed file(s), {} crate(s) and {} scenario(s) to test",
-        changes.files().len(),
+        "{changed}{} crate(s) and {} scenario(s) to test",
         plan.crates.len(),
         plan.scenarios.len()
     );

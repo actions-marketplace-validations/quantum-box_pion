@@ -258,6 +258,17 @@ that deployment.
 cargo pion plan --base "$LAST_DEPLOYED" --for-package api --format cargo-test
 ```
 
+### Several formats from one plan
+
+Planning reads the whole reference graph. To get more than one format, plan
+once, save the plan, and render the others from it:
+
+```bash
+cargo pion plan --base "$BASE" --refs "$REFS" --format json > plan.json
+cargo pion render --plan plan.json --format cargo-test
+cargo pion render --plan plan.json --format scenarios
+```
+
 `--deny-uncovered` exits with status 2 when a changed file is covered by no
 rule, for callers that gate a deployment on the plan.
 
