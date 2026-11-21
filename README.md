@@ -62,13 +62,13 @@ Each release has prebuilt binaries for Linux (x86_64 and aarch64) and macOS
 download against it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/quantum-box/pion/v0.1.0/scripts/install.sh \
-  | PION_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/quantum-box/pion/v0.1.1/scripts/install.sh \
+  | PION_VERSION=v0.1.1 sh
 ```
 
 | Variable | Meaning |
 | --- | --- |
-| `PION_VERSION` | Release to install, such as `v0.1.0`. Default: `latest` |
+| `PION_VERSION` | Release to install, such as `v0.1.1`. Default: `latest` |
 | `PION_INSTALL_DIR` | Where the binaries go. Default: `$CARGO_HOME/bin` |
 | `PION_RUSTC_NIGHTLY` | Also install `pion-rustc` built for this nightly, such as `nightly-2026-06-04` |
 
@@ -81,10 +81,10 @@ there and release, or build the wrapper from source (see
 ### In GitHub Actions
 
 ```yaml
-- uses: quantum-box/pion@2d9000d361ef951a075d3545629203f91edafc41 # v0.1.0
+- uses: quantum-box/pion@f4072542640f40b13136c84b8c3895d0d450bdf4 # v0.1.1
   id: pion
   with:
-    version: v0.1.0
+    version: v0.1.1
     rustc-nightly: nightly-2026-06-04   # omit to install cargo-pion only
 
 # Record references during the check the job runs anyway

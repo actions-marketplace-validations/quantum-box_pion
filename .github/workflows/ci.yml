@@ -34,7 +34,7 @@ jobs:
       - uses: ./
         id: pion
         with:
-          version: v0.1.0
+          version: v0.1.1
           rustc-nightly: nightly-2026-06-04
       - run: cargo pion --version
       - name: Record the fixture workspace with the installed wrapper
