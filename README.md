@@ -258,6 +258,38 @@ that deployment.
 cargo pion plan --base "$LAST_DEPLOYED" --for-package api --format cargo-test
 ```
 
+### Whether to release one deployable
+
+`cargo pion reach` answers a different question from `plan`: does the change
+alter the binary built from this crate? It follows the crate's normal and
+build dependencies only, and leaves out the parts of a crate that are never
+shipped.
+
+```bash
+cargo pion reach --base "$LAST_DEPLOYED" --package api --package worker --format json
+```
+
+```json
+{
+  "packages": {
+    "api": { "reached": true, "reasons": [{ "reason": "file_changed", "path": "core/src/token.rs", "package": "core" }] },
+    "worker": { "reached": false, "reasons": [] }
+  },
+  "outside": ["deploy/api.Dockerfile"]
+}
+```
+
+| Changed file | Reaches the crate when |
+| --- | --- |
+| A file of a workspace crate | The binary is built from that crate, and the file is not under the crate's `tests/`, `benches/` or `examples/` |
+| `Cargo.lock` | The set of external packages the crate resolves with differs between the two revisions |
+| The root `Cargo.toml` | An entry of `[workspace.dependencies]` that differs names a package the binary is built from. A change to anything but that table and the member lists reaches every crate |
+| `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Always |
+| A file no workspace crate owns | Never. It is listed under `outside`, for the caller to match against its own rules (a Dockerfile, a workflow) |
+
+The decision is made per crate, not per definition: a change to any shipped
+file of a crate reaches every binary built from that crate.
+
 ### Several formats from one plan
 
 Planning reads the whole reference graph. To get more than one format, plan
@@ -280,7 +312,8 @@ rule, for callers that gate a deployment on the plan.
 | --- | --- |
 | A file inside a crate (`.rs`, `Cargo.toml`, `build.rs`, SQL, fixtures, ...) | That crate, and every workspace crate that depends on it |
 | `Cargo.lock` | The crates that depend on a package the lockfile now resolves differently |
-| The root `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Every crate |
+| The root `Cargo.toml` | The crates built from a package whose `[workspace.dependencies]` entry differs. A change to the member lists alone selects nothing; a change to anything else (a profile, a patch, the resolver) selects every crate |
+| `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Every crate |
 | A file no workspace crate owns | None. The file is listed as not covered |
 
 A crate depends on another when its tests are built from it: through normal
@@ -343,7 +376,8 @@ cargo pion audit --plan plan.json --libtest failed.log
 
 pion runs in CI next to deploy credentials, so its dependencies are kept few
 and well known: `guppy` for the dependency graph, `clap`, `serde`,
-`serde_json`, `camino` and `thiserror`. The SCIP index, `Cargo.lock`, JUnit
+`serde_json`, `camino`, `thiserror`, and `toml` to compare the root manifest
+of two revisions. The SCIP index, `Cargo.lock`, JUnit
 reports and scenario files are read by small readers in this repository
 rather than by additional crates. State the reason when adding a dependency.
 

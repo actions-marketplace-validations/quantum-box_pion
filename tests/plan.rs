@@ -168,3 +168,38 @@ fn a_plan_that_selects_no_crate_gives_no_cargo_test_invocation() {
 
     assert!(plan.cargo_test_arguments().is_empty());
 }
+
+#[test]
+fn a_root_manifest_change_selects_the_crates_built_from_the_dependency() {
+    use pion::Planner;
+    use pion::manifest::ManifestChange;
+    use std::collections::BTreeSet;
+
+    let graph = fixture();
+    let paths = [RepoPath::parse("Cargo.toml").expect("valid path")];
+    let changes = ChangeSet::classify(paths, &graph);
+
+    let members_only = ManifestChange::Dependencies(BTreeSet::new());
+    let plan = Planner::new(&graph)
+        .with_manifest_change(&members_only)
+        .plan(&changes)
+        .expect("plan");
+    assert!(selected(&plan).is_empty());
+
+    let one = ManifestChange::Dependencies(BTreeSet::from(["fx-tools".to_owned()]));
+    let plan = Planner::new(&graph)
+        .with_manifest_change(&one)
+        .plan(&changes)
+        .expect("plan");
+    // fx-auth tests with fx-tools; fx-api does not.
+    assert_eq!(selected(&plan), ["fx-auth", "fx-tools"]);
+
+    let plan = Planner::new(&graph)
+        .with_manifest_change(&ManifestChange::Everything)
+        .plan(&changes)
+        .expect("plan");
+    assert_eq!(
+        selected(&plan),
+        ["fx-api", "fx-auth", "fx-core", "fx-tools"]
+    );
+}

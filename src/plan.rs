@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::change::{ChangeSet, FileKind, RepoPath};
 use crate::git::ChangedLine;
 use crate::lockfile::LockChange;
+use crate::manifest::ManifestChange;
 use crate::scenario::Scenario;
 use crate::symbols::{ReferenceGraph, SymbolId, TestName};
 use crate::workspace::{Dependency, PackageName, WorkspaceError, WorkspaceGraph};
@@ -33,6 +34,9 @@ pub enum Reason {
     /// The crate depends on an external package that `Cargo.lock` now
     /// resolves differently.
     DependsOnExternal { name: String, version: String },
+    /// The crate is built from a package whose entry in the root manifest's
+    /// `[workspace.dependencies]` changed.
+    DependsOnWorkspaceDependency { name: String },
     /// A test refers, directly or through other definitions, to a changed
     /// definition.
     Reaches { changed: SymbolId },
@@ -107,6 +111,7 @@ pub struct Narrowing<'a> {
 pub struct Planner<'a> {
     graph: &'a WorkspaceGraph,
     lock_change: Option<&'a LockChange>,
+    manifest_change: Option<&'a ManifestChange>,
     narrowing: Option<Narrowing<'a>>,
     scenarios: &'a [Scenario],
     scenario_roots: &'a [RepoPath],
@@ -117,6 +122,7 @@ impl<'a> Planner<'a> {
         Self {
             graph,
             lock_change: None,
+            manifest_change: None,
             narrowing: None,
             scenarios: &[],
             scenario_roots: &[],
@@ -127,6 +133,13 @@ impl<'a> Planner<'a> {
     /// packages it touches.
     pub fn with_lock_change(mut self, change: &'a LockChange) -> Self {
         self.lock_change = Some(change);
+        self
+    }
+
+    /// Narrows a change to the root `Cargo.toml` to the crates built from
+    /// the `[workspace.dependencies]` entries it touches.
+    pub fn with_manifest_change(mut self, change: &'a ManifestChange) -> Self {
+        self.manifest_change = Some(change);
         self
     }
 
@@ -157,6 +170,7 @@ impl<'a> Planner<'a> {
         let mut changed_symbols = BTreeSet::new();
         let mut uncovered = Vec::new();
         let lockfile = self.graph.lockfile();
+        let root_manifest = self.graph.root_manifest();
 
         for file in changes.files() {
             let path = &file.path;
@@ -167,6 +181,8 @@ impl<'a> Planner<'a> {
                 FileKind::WorkspaceGlobal => {
                     let narrowed = if lockfile.as_ref() == Some(path) {
                         self.lock_dependents(&mut whole)?
+                    } else if root_manifest.as_ref() == Some(path) {
+                        self.manifest_dependents(&mut whole)?
                     } else {
                         false
                     };
@@ -340,6 +356,27 @@ impl<'a> Planner<'a> {
                         name: package.name.clone(),
                         version: package.version.clone(),
                     });
+            }
+        }
+        Ok(true)
+    }
+
+    /// Adds the crates built from the `[workspace.dependencies]` entries a
+    /// root manifest change touches. Returns `false` when the change cannot
+    /// be narrowed.
+    fn manifest_dependents(
+        &self,
+        whole: &mut BTreeMap<PackageName, BTreeSet<Reason>>,
+    ) -> Result<bool, WorkspaceError> {
+        let Some(ManifestChange::Dependencies(names)) = self.manifest_change else {
+            return Ok(false);
+        };
+        for name in names {
+            for dependent in self.graph.dependents_of_named(name)? {
+                whole
+                    .entry(dependent)
+                    .or_default()
+                    .insert(Reason::DependsOnWorkspaceDependency { name: name.clone() });
             }
         }
         Ok(true)

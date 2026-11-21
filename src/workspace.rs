@@ -196,6 +196,52 @@ impl WorkspaceGraph {
             .collect())
     }
 
+    /// The names of every package `package` is built from, workspace crates
+    /// and external packages alike, through normal and build dependencies.
+    pub fn built_from_names(
+        &self,
+        package: &PackageName,
+    ) -> Result<BTreeSet<String>, WorkspaceError> {
+        let id = self
+            .ids
+            .get(package)
+            .ok_or_else(|| WorkspaceError::UnknownPackage(package.clone()))?;
+        let closure = self
+            .graph
+            .query_forward([id])?
+            .resolve_with_fn(|_, link| !link.dev_only());
+        Ok(closure
+            .packages(DependencyDirection::Forward)
+            .map(|dependency| dependency.name().to_owned())
+            .collect())
+    }
+
+    /// The workspace crates whose tests are built from a package called
+    /// `name`, at any version. Empty when the graph has no such package:
+    /// nothing is built from it.
+    pub fn dependents_of_named(&self, name: &str) -> Result<BTreeSet<PackageName>, WorkspaceError> {
+        let mut dependents = BTreeSet::new();
+        for package in self.graph.packages() {
+            if package.name() == name {
+                dependents.extend(self.tests_built_from(package.id())?);
+            }
+        }
+        Ok(dependents)
+    }
+
+    /// The directory of `package`, relative to the repository root.
+    pub fn directory_of(&self, package: &PackageName) -> Option<&Utf8Path> {
+        self.directories
+            .iter()
+            .find(|(_, owner)| *owner == package)
+            .map(|(directory, _)| directory.as_path())
+    }
+
+    /// The repository path of the workspace's root `Cargo.toml`.
+    pub fn root_manifest(&self) -> Option<RepoPath> {
+        self.repo_path("Cargo.toml")
+    }
+
     fn tests_built_from(&self, id: &PackageId) -> Result<BTreeSet<PackageName>, WorkspaceError> {
         let built_from = self
             .graph

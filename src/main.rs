@@ -6,6 +6,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use pion::git::{self, Revision, Side};
 use pion::lockfile::Lockfile;
+use pion::manifest::ManifestChange;
+use pion::reach::{LockPair, Reach, ReachReason};
 use pion::scip::Index;
 use pion::{
     ChangeSet, FallbackCause, Narrowing, Planner, Reason, ReferenceGraph, RepoPath, ScenarioReason,
@@ -39,6 +41,8 @@ enum Cargo {
 enum Action {
     /// Print which tests to run for the changes since a revision
     Plan(PlanArgs),
+    /// Print whether the changes since a revision reach what a crate ships
+    Reach(ReachArgs),
     /// Print a plan saved with `plan --format json` in another format
     Render(RenderArgs),
     /// Run the selected tests with cargo-nextest
@@ -102,6 +106,32 @@ struct PlanArgs {
     /// Exit with status 2 when a changed file is covered by no rule
     #[arg(long)]
     deny_uncovered: bool,
+}
+
+#[derive(clap::Args)]
+struct ReachArgs {
+    /// Revision to compare against (branch, tag or commit)
+    #[arg(long)]
+    base: Revision,
+    /// Revision to decide for; the working tree when omitted
+    #[arg(long)]
+    head: Option<Revision>,
+    /// Path to the workspace `Cargo.toml`
+    #[arg(long, default_value = "Cargo.toml")]
+    manifest_path: Utf8PathBuf,
+    /// A workspace crate that is released as a binary; repeatable
+    #[arg(long = "package", value_name = "NAME", required = true)]
+    packages: Vec<String>,
+    #[arg(long, value_enum, default_value_t = ReachFormat::Text)]
+    format: ReachFormat,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ReachFormat {
+    /// Each crate, whether the change reaches it, and why
+    Text,
+    /// The whole answer as JSON
+    Json,
 }
 
 #[derive(clap::Args)]
@@ -191,6 +221,7 @@ fn main() -> ExitCode {
     let Cargo::Pion(action) = Cargo::parse();
     let result = match action {
         Action::Plan(args) => plan(&args),
+        Action::Reach(args) => reach(&args),
         Action::Render(args) => render(&args),
         Action::Run(args) => run(&args),
         Action::Index(args) => index(&args),
@@ -406,6 +437,99 @@ fn audit_plan(args: &AuditArgs) -> Result<ExitCode, Failure> {
     })
 }
 
+/// The text of `path` at the base and at the head, when `path` is among the
+/// changed files and exists at both.
+fn two_revisions(
+    repository: &Utf8Path,
+    base: &Revision,
+    head: Option<&Revision>,
+    path: Option<RepoPath>,
+    changed: &[RepoPath],
+) -> Result<Option<(String, String)>, Failure> {
+    let Some(path) = path.filter(|path| changed.contains(path)) else {
+        return Ok(None);
+    };
+    let before = git::file_at(repository, base, &path)?;
+    let after = match head {
+        Some(head) => git::file_at(repository, head, &path)?,
+        None => std::fs::read_to_string(repository.join(path.as_path())).ok(),
+    };
+    Ok(before.zip(after))
+}
+
+fn reach(args: &ReachArgs) -> Result<ExitCode, Failure> {
+    let manifest = args.manifest_path.canonicalize_utf8()?;
+    let manifest_dir = manifest.parent().ok_or("the manifest path has no parent")?;
+    let repository = git::repository_root(manifest_dir)?.canonicalize_utf8()?;
+    let head = args.head.as_ref();
+
+    let graph = WorkspaceGraph::load(&manifest, &repository)?;
+    let paths = git::changed_paths(&repository, &args.base, head)?;
+    let locks = two_revisions(&repository, &args.base, head, graph.lockfile(), &paths)?
+        .map(|(before, after)| (Lockfile::parse(&before), Lockfile::parse(&after)));
+    let manifest_change =
+        two_revisions(&repository, &args.base, head, graph.root_manifest(), &paths)?
+            .map(|(before, after)| ManifestChange::between(&before, &after));
+
+    let mut packages = BTreeSet::new();
+    for name in &args.packages {
+        let package = graph
+            .package(name)
+            .ok_or_else(|| format!("`{name}` is not a crate of this workspace"))?;
+        packages.insert(package);
+    }
+    let changes = ChangeSet::classify(paths, &graph);
+    let mut reach = Reach::new(&graph);
+    if let Some((base, head)) = &locks {
+        reach = reach.with_locks(LockPair { base, head });
+    }
+    if let Some(change) = &manifest_change {
+        reach = reach.with_manifest_change(change);
+    }
+    let report = reach.of(&changes, &packages)?;
+
+    match args.format {
+        ReachFormat::Json => say!("{}", serde_json::to_string_pretty(&report)?),
+        ReachFormat::Text => {
+            for (package, reach) in &report.packages {
+                if !reach.reached {
+                    say!("{package}: not reached");
+                    continue;
+                }
+                say!("{package}: reached");
+                // A wide change gives hundreds of reasons; a few explain it.
+                const SHOWN: usize = 5;
+                for reason in reach.reasons.iter().take(SHOWN) {
+                    say!("  {}", describe_reach(reason));
+                }
+                if reach.reasons.len() > SHOWN {
+                    say!("  ... and {} more", reach.reasons.len() - SHOWN);
+                }
+            }
+            if !report.outside.is_empty() {
+                say!(
+                    "{} changed file(s) outside every crate",
+                    report.outside.len()
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn describe_reach(reason: &ReachReason) -> String {
+    match reason {
+        ReachReason::FileChanged { path, package } => format!("changed in {package}: {path}"),
+        ReachReason::LockChanged { name, version } => {
+            format!("resolved differently: {name} {version}")
+        }
+        ReachReason::WorkspaceDependencyChanged { name } => {
+            format!("workspace dependency changed: {name}")
+        }
+        ReachReason::WorkspaceGlobal { path } => format!("changes every build: {path}"),
+    }
+}
+
 /// Builds the reference graph from whichever source was given.
 fn reference_graph(
     scip: Option<&Utf8Path>,
@@ -524,19 +648,11 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
     let graph = WorkspaceGraph::load(&manifest, &repository)?;
     let paths = git::changed_paths(&repository, &args.base, head)?;
 
-    let lock_change = match graph.lockfile().filter(|lock| paths.contains(lock)) {
-        Some(lock) => {
-            let before = git::file_at(&repository, &args.base, &lock)?;
-            let after = match head {
-                Some(head) => git::file_at(&repository, head, &lock)?,
-                None => std::fs::read_to_string(repository.join(lock.as_path())).ok(),
-            };
-            before.zip(after).map(|(before, after)| {
-                Lockfile::parse(&after).changes_since(&Lockfile::parse(&before))
-            })
-        }
-        None => None,
-    };
+    let lock_change = two_revisions(&repository, &args.base, head, graph.lockfile(), &paths)?
+        .map(|(before, after)| Lockfile::parse(&after).changes_since(&Lockfile::parse(&before)));
+    let manifest_change =
+        two_revisions(&repository, &args.base, head, graph.root_manifest(), &paths)?
+            .map(|(before, after)| ManifestChange::between(&before, &after));
 
     let symbols = reference_graph(args.scip.as_deref(), args.refs.as_deref(), &graph)?;
     let lines = match &symbols {
@@ -578,6 +694,9 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
     let mut planner = Planner::new(&graph).with_scenarios(&scenarios, &scenario_roots);
     if let Some(change) = &lock_change {
         planner = planner.with_lock_change(change);
+    }
+    if let Some(change) = &manifest_change {
+        planner = planner.with_manifest_change(change);
     }
     if let Some(symbols) = &symbols {
         planner = planner.with_narrowing(Narrowing {
@@ -655,6 +774,9 @@ fn describe(reason: &Reason) -> String {
         Reason::DependsOnCrate { package } => format!("depends on: {package}"),
         Reason::DependsOnExternal { name, version } => {
             format!("depends on: {name} {version} (Cargo.lock)")
+        }
+        Reason::DependsOnWorkspaceDependency { name } => {
+            format!("workspace dependency changed: {name}")
         }
         Reason::Reaches { changed } => format!("reaches: {changed}"),
         Reason::FellBack { cause } => match cause {
