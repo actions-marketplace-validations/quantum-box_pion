@@ -413,3 +413,23 @@ fn a_plan_that_selects_nothing_says_so() {
     assert_eq!(outputs["matrix"], r#"{"include":[]}"#);
     assert_eq!(outputs["uncovered"], r#"["docs/guide.md"]"#);
 }
+
+#[test]
+fn narrowed_crates_become_a_cargo_test_invocation_with_exact_names() {
+    let fixture = Fixture::load();
+    let plan = fixture.plan_edit("core/src/token.rs", "self.age > LIMIT");
+
+    assert_eq!(
+        plan.cargo_test_arguments(),
+        [[
+            "--package",
+            "fx-auth",
+            "--package",
+            "fx-core",
+            "--",
+            "--exact",
+            "tests::rejects_expired_token",
+            "token::tests::token_roundtrip",
+        ]]
+    );
+}

@@ -461,6 +461,62 @@ impl TestPlan {
             })
     }
 
+    /// Keeps the crates in `crates` and the scenarios `keep_scenario`
+    /// accepts, and drops the rest. For a caller that tests one deployable:
+    /// the tests of a crate it is not built from say nothing about it.
+    pub fn restrict_to(
+        &mut self,
+        crates: &BTreeSet<PackageName>,
+        keep_scenario: impl Fn(&RepoPath) -> bool,
+    ) {
+        self.crates.retain(|package, _| crates.contains(package));
+        self.scenarios.retain(|scenario, _| keep_scenario(scenario));
+    }
+
+    /// The selection as arguments for `cargo test`, one list per invocation,
+    /// for workspaces that do not use nextest:
+    ///
+    /// - the crates that run all their tests, as `--package` arguments;
+    /// - the crates that run some, followed by `-- --exact` and the names.
+    ///
+    /// The second invocation gives every name to every crate in it, so a
+    /// test runs in a crate that did not select it when another crate
+    /// selected a test of the same name. That runs more, never less.
+    ///
+    /// The caller's own arguments go before these: the list may end with the
+    /// arguments of the test binary.
+    pub fn cargo_test_arguments(&self) -> Vec<Vec<String>> {
+        let packages = |all: bool| -> Vec<String> {
+            self.crates
+                .iter()
+                .filter(|(_, plan)| (plan.selection == Selection::All) == all)
+                .flat_map(|(package, _)| ["--package".to_owned(), package.to_string()])
+                .collect()
+        };
+        let mut invocations = Vec::new();
+        let whole = packages(true);
+        if !whole.is_empty() {
+            invocations.push(whole);
+        }
+        let mut some = packages(false);
+        if !some.is_empty() {
+            let names: BTreeSet<&str> = self
+                .crates
+                .values()
+                .filter_map(|plan| match &plan.selection {
+                    Selection::All => None,
+                    Selection::Tests(names) => Some(names),
+                })
+                .flatten()
+                .map(TestName::as_str)
+                .collect();
+            some.extend(["--".to_owned(), "--exact".to_owned()]);
+            some.extend(names.into_iter().map(str::to_owned));
+            invocations.push(some);
+        }
+        invocations
+    }
+
     /// The nextest filterset that runs the selection of one crate.
     pub fn crate_filterset(package: &PackageName, plan: &CratePlan) -> String {
         match &plan.selection {

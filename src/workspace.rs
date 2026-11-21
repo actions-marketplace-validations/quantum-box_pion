@@ -173,6 +173,29 @@ impl WorkspaceGraph {
         Ok(found.then_some(dependents))
     }
 
+    /// The workspace crates `package` is built from: itself and everything it
+    /// depends on through normal and build dependencies. Its
+    /// dev-dependencies are not part of what gets shipped, so they are left
+    /// out.
+    pub fn built_from(
+        &self,
+        package: &PackageName,
+    ) -> Result<BTreeSet<PackageName>, WorkspaceError> {
+        let id = self
+            .ids
+            .get(package)
+            .ok_or_else(|| WorkspaceError::UnknownPackage(package.clone()))?;
+        let closure = self
+            .graph
+            .query_forward([id])?
+            .resolve_with_fn(|_, link| !link.dev_only());
+        Ok(closure
+            .packages(DependencyDirection::Forward)
+            .filter(|dependency| dependency.in_workspace())
+            .map(|dependency| PackageName(dependency.name().to_owned()))
+            .collect())
+    }
+
     fn tests_built_from(&self, id: &PackageId) -> Result<BTreeSet<PackageName>, WorkspaceError> {
         let built_from = self
             .graph

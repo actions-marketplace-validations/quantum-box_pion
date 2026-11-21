@@ -232,6 +232,31 @@ run. Use it to see how far a change to a given function spreads.
 | `github-matrix` | `{"include":[{"package":…,"filterset":…}]}` for a GitHub Actions matrix, one job per crate |
 | `scenarios` | The selected scenario files, one per line |
 | `github-output` | `key=value` lines for `$GITHUB_OUTPUT`: everything later jobs need, from one run |
+| `cargo-test` | Arguments for `cargo test`, one invocation per line, for workspaces without nextest |
+
+With `cargo-test`, the first line names the crates that run every test, and
+the second the crates that run some, followed by `-- --exact` and the test
+names. Put your own cargo arguments before each line:
+
+```bash
+cargo pion plan --base "$BASE" --refs "$REFS" --format cargo-test |
+  while read -r selection; do
+    # Unquoted on purpose: one line holds several arguments.
+    cargo test --locked --no-fail-fast $selection
+  done
+```
+
+### Testing one deployable
+
+`--for-package api` keeps only the tests of the crates `api` is built from:
+itself and its normal and build dependencies, and the scenarios that belong
+to one of them. Use it before deploying one binary of a workspace that has
+several: a test of a crate the binary does not contain says nothing about
+that deployment.
+
+```bash
+cargo pion plan --base "$LAST_DEPLOYED" --for-package api --format cargo-test
+```
 
 `--deny-uncovered` exits with status 2 when a changed file is covered by no
 rule, for callers that gate a deployment on the plan.

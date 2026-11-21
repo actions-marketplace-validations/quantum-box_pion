@@ -76,6 +76,11 @@ struct Selecting {
     /// A directory of API scenario files to select from; repeatable
     #[arg(long = "scenarios", value_name = "DIR")]
     scenario_dirs: Vec<Utf8PathBuf>,
+    /// Keep only the tests of the crates this workspace crate is built from
+    /// (itself and its normal and build dependencies), and the scenarios
+    /// that belong to one of them. For testing one deployable; repeatable
+    #[arg(long = "for-package", value_name = "NAME")]
+    for_packages: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -163,6 +168,9 @@ enum Format {
     GithubMatrix,
     /// The selected scenario files, one per line
     Scenarios,
+    /// Arguments for `cargo test`, one invocation per line: first the crates
+    /// that run every test, then the crates that run some, with the names
+    CargoTest,
     /// `key=value` lines to append to `$GITHUB_OUTPUT`: everything later
     /// jobs need, from one run of pion
     GithubOutput,
@@ -220,6 +228,11 @@ fn plan(args: &PlanArgs) -> Result<ExitCode, Failure> {
         Format::Scenarios => {
             for scenario in plan.scenarios.keys() {
                 say!("{scenario}");
+            }
+        }
+        Format::CargoTest => {
+            for arguments in plan.cargo_test_arguments() {
+                say!("{}", arguments.join(" "));
             }
         }
         Format::Text => print_text(&changes, &plan),
@@ -542,7 +555,21 @@ fn select(args: &Selecting) -> Result<(ChangeSet, TestPlan), Failure> {
             lines: &lines,
         });
     }
-    let plan = planner.plan(&changes)?;
+    let mut plan = planner.plan(&changes)?;
+    if !args.for_packages.is_empty() {
+        let mut built_from = BTreeSet::new();
+        for name in &args.for_packages {
+            let package = graph
+                .package(name)
+                .ok_or_else(|| format!("`{name}` is not a crate of this workspace"))?;
+            built_from.extend(graph.built_from(&package)?);
+        }
+        plan.restrict_to(&built_from, |scenario| {
+            graph
+                .owner_of(scenario)
+                .is_some_and(|owner| built_from.contains(owner))
+        });
+    }
     Ok((changes, plan))
 }
 

@@ -114,3 +114,57 @@ fn the_nextest_filterset_names_each_selected_crate() {
         Some("package(=fx-api) + package(=fx-auth)")
     );
 }
+
+fn package(graph: &WorkspaceGraph, name: &str) -> pion::PackageName {
+    graph.package(name).expect("fixture crate")
+}
+
+#[test]
+fn a_crate_is_built_from_its_normal_dependencies_but_not_its_dev_dependencies() {
+    let graph = fixture();
+    let names = |name: &str| -> Vec<String> {
+        graph
+            .built_from(&package(&graph, name))
+            .expect("closure")
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+
+    // fx-tools is a dev-dependency of fx-auth: fx-api does not ship it.
+    assert_eq!(names("fx-api"), ["fx-api", "fx-auth", "fx-core"]);
+    assert_eq!(names("fx-core"), ["fx-core"]);
+}
+
+#[test]
+fn a_plan_for_one_deployable_drops_the_crates_it_is_not_built_from() {
+    let graph = fixture();
+    // A change to fx-core reaches fx-auth and fx-api as well.
+    let mut plan = plan(&graph, &["core/src/lib.rs"]);
+
+    let built_from = graph
+        .built_from(&package(&graph, "fx-auth"))
+        .expect("closure");
+    plan.restrict_to(&built_from, |_| true);
+
+    assert_eq!(selected(&plan), ["fx-auth", "fx-core"]);
+}
+
+#[test]
+fn whole_crates_become_one_cargo_test_invocation() {
+    let graph = fixture();
+    let plan = plan(&graph, &["auth/src/lib.rs"]);
+
+    assert_eq!(
+        plan.cargo_test_arguments(),
+        [["--package", "fx-api", "--package", "fx-auth"]]
+    );
+}
+
+#[test]
+fn a_plan_that_selects_no_crate_gives_no_cargo_test_invocation() {
+    let graph = fixture();
+    let plan = plan(&graph, &["docs/guide.md"]);
+
+    assert!(plan.cargo_test_arguments().is_empty());
+}
