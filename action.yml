@@ -1,10 +1,17 @@
-name: Install pion
-description: Install pion's release binaries, so a workflow can select the tests a change affects without compiling pion.
+name: Setup pion
+description: Install pion to select the tests a change affects, from the Cargo dependency graph and compiler-recorded references.
+author: Quantum Box
+branding:
+  icon: filter
+  color: purple
 inputs:
   version:
-    description: Release to install, such as v0.1.0. Pin a version; "latest" follows new releases.
+    description: >-
+      Release to install, such as v0.1.2. When empty, the release this action
+      was referenced by (`uses: quantum-box/pion@v0.1.2`), or the latest
+      release when it was referenced by a commit or a branch.
     required: false
-    default: latest
+    default: ''
   rustc-nightly:
     description: >-
       Also install pion-rustc, the rustc wrapper that records references, built
@@ -16,19 +23,34 @@ outputs:
   pion-rustc:
     description: Path of pion-rustc, to set as RUSTC_WORKSPACE_WRAPPER. Empty when it was not installed.
     value: ${{ steps.install.outputs.pion-rustc }}
+  version:
+    description: The release that was asked for, such as v0.1.2 or latest.
+    value: ${{ steps.install.outputs.version }}
 runs:
   using: composite
   steps:
     - id: install
       shell: bash
       env:
-        PION_VERSION: ${{ inputs.version }}
+        REQUESTED_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
         PION_RUSTC_NIGHTLY: ${{ inputs.rustc-nightly }}
         PION_INSTALL_DIR: ${{ runner.temp }}/pion/bin
       run: |
         set -euo pipefail
+        PION_VERSION="$REQUESTED_VERSION"
+        if [ -z "$PION_VERSION" ]; then
+          # A release tag names its own binaries; anything else gets the latest.
+          if [[ "$ACTION_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            PION_VERSION="$ACTION_REF"
+          else
+            PION_VERSION=latest
+          fi
+        fi
+        export PION_VERSION
         sh "$GITHUB_ACTION_PATH/scripts/install.sh"
         echo "$PION_INSTALL_DIR" >> "$GITHUB_PATH"
+        echo "version=$PION_VERSION" >> "$GITHUB_OUTPUT"
         if [ -n "$PION_RUSTC_NIGHTLY" ]; then
           echo "pion-rustc=$PION_INSTALL_DIR/pion-rustc" >> "$GITHUB_OUTPUT"
         else

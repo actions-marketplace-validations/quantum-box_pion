@@ -96,8 +96,16 @@ there and release, or build the wrapper from source (see
 - run: cargo pion plan --base "$BASE_SHA" --refs "$RUNNER_TEMP/pion-refs" --format github-matrix
 ```
 
-Pin the action to a commit and `version` to a tag, so that a new release
-cannot change what a workflow runs without a change in the workflow.
+The action is also on the GitHub Marketplace as **Setup pion**. Referenced by
+a release tag, it installs that release without a `version` input:
+
+```yaml
+- uses: quantum-box/pion@v0.1.2
+```
+
+For a workflow that guards a deployment, pin the action to a commit and
+`version` to a tag instead, as above, so that nothing can change what the
+workflow runs without a change in the workflow.
 
 Run pion once, in a job at the start, and let every other job read its
 outputs. [docs/ci.md](docs/ci.md) shows that layout.
