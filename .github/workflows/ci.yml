@@ -39,12 +39,16 @@ jobs:
       - run: cargo pion --version
       - name: Record the fixture workspace with the installed wrapper
         env:
-          RUSTC_WORKSPACE_WRAPPER: ${{ steps.pion.outputs.pion-rustc }}
+          WRAPPER: ${{ steps.pion.outputs.pion-rustc }}
           PION_REFS_DIR: ${{ runner.temp }}/refs
         run: |
           set -euo pipefail
           rustup toolchain install nightly-2026-06-04 --profile minimal
           cd tests/fixtures/workspace
-          cargo +nightly-2026-06-04 check --all-targets --target-dir "$RUNNER_TEMP/fixture-target"
+          # The wrapper is set for this one command: it loads the compiler
+          # library of the nightly it was built for, and cannot start under
+          # any other toolchain.
+          RUSTC_WORKSPACE_WRAPPER="$WRAPPER" \
+            cargo +nightly-2026-06-04 check --all-targets --target-dir "$RUNNER_TEMP/fixture-target"
           test -s "$PION_REFS_DIR/fx_core.test.json"
           cargo pion plan --base HEAD --refs "$PION_REFS_DIR"

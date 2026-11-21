@@ -99,6 +99,11 @@ there and release, or build the wrapper from source (see
 Pin the action to a commit and `version` to a tag, so that a new release
 cannot change what a workflow runs without a change in the workflow.
 
+Set `RUSTC_WORKSPACE_WRAPPER` only on the commands that build with the
+nightly the wrapper was made for. It loads that compiler's library and cannot
+start under another toolchain, which makes every cargo command fail,
+`cargo metadata` included.
+
 ### From source
 
 ```bash
