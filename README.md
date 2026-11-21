@@ -81,7 +81,7 @@ there and release, or build the wrapper from source (see
 ### In GitHub Actions
 
 ```yaml
-- uses: quantum-box/pion@<commit of the release>  # v0.1.0
+- uses: quantum-box/pion@2d9000d361ef951a075d3545629203f91edafc41 # v0.1.0
   id: pion
   with:
     version: v0.1.0
