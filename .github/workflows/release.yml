@@ -1,0 +1,179 @@
+# Builds the release binaries and, for a version tag, publishes them.
+#
+#   cargo-pion-<target>.tar.gz             the `cargo pion` command
+#   pion-rustc-<nightly>-<target>.tar.gz   the rustc wrapper, one per nightly
+#                                          listed in driver/toolchains.txt
+#   SHA256SUMS                             checksums of every archive
+#
+# Pushing a tag `v<version>` that matches Cargo.toml publishes a release. A
+# manual run builds everything and publishes nothing.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Read the version and the toolchains
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      toolchains: ${{ steps.plan.outputs.toolchains }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [[ "$REF" == refs/tags/v* ]]; then
+            if [ "$REF" != "refs/tags/v$version" ]; then
+              echo "::error::tag ${REF#refs/tags/} does not match Cargo.toml version $version"
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          toolchains="$(grep -v '^#' driver/toolchains.txt | grep -v '^$' | sed 's/.*/"&"/' | paste -sd, -)"
+          echo "toolchains=[$toolchains]" >> "$GITHUB_OUTPUT"
+
+  cli:
+    name: cargo-pion (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl: one static binary that runs on any Linux runner.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup target add "$TARGET"
+          cargo build --release --locked --target "$TARGET"
+          mkdir -p dist
+          tar -czf "dist/cargo-pion-$TARGET.tar.gz" -C "target/$TARGET/release" cargo-pion
+      - name: Check that the binary runs
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          "target/$TARGET/release/cargo-pion" pion --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-pion-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  driver:
+    name: pion-rustc (${{ matrix.toolchain }}, ${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ${{ fromJSON(needs.prepare.outputs.toolchains) }}
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
+        include:
+          # The wrapper loads the compiler's shared library, so it is built
+          # for the same target as the toolchain itself.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustc-dev --component llvm-tools
+          cargo "+$TOOLCHAIN" build --release --locked --manifest-path driver/Cargo.toml
+          mkdir -p dist
+          tar -czf "dist/pion-rustc-$TOOLCHAIN-$TARGET.tar.gz" -C driver/target/release pion-rustc
+      - name: Check that the wrapper compiles and records a crate
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          set -euo pipefail
+          refs="$RUNNER_TEMP/refs"
+          cd tests/fixtures/workspace
+          RUSTC_WORKSPACE_WRAPPER="$GITHUB_WORKSPACE/driver/target/release/pion-rustc" \
+            PION_REFS_DIR="$refs" \
+            cargo "+$TOOLCHAIN" check --all-targets --target-dir "$RUNNER_TEMP/fixture-target"
+          test -s "$refs/fx_core.test.json"
+          if ls "$refs"/*.failed >/dev/null 2>&1; then
+            echo "::error::recording failed for a fixture crate"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pion-rustc-${{ matrix.toolchain }}-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish the release
+    needs: [prepare, cli, driver]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Write checksums and create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --generate-notes -- *.tar.gz SHA256SUMS

@@ -1,0 +1,4 @@
+# The nightly toolchains pion-rustc is released for, one per line.
+# The wrapper links the compiler's own crates, so a binary works only with
+# the toolchain it was built with. Add the nightly your workspace pins.
+nightly-2026-06-04

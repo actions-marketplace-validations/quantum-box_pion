@@ -1,0 +1,36 @@
+name: Install pion
+description: Install pion's release binaries, so a workflow can select the tests a change affects without compiling pion.
+inputs:
+  version:
+    description: Release to install, such as v0.1.0. Pin a version; "latest" follows new releases.
+    required: false
+    default: latest
+  rustc-nightly:
+    description: >-
+      Also install pion-rustc, the rustc wrapper that records references, built
+      for this nightly (such as nightly-2026-06-04). It has to be the toolchain
+      the workspace builds with. Leave empty to install cargo-pion only.
+    required: false
+    default: ''
+outputs:
+  pion-rustc:
+    description: Path of pion-rustc, to set as RUSTC_WORKSPACE_WRAPPER. Empty when it was not installed.
+    value: ${{ steps.install.outputs.pion-rustc }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        PION_VERSION: ${{ inputs.version }}
+        PION_RUSTC_NIGHTLY: ${{ inputs.rustc-nightly }}
+        PION_INSTALL_DIR: ${{ runner.temp }}/pion/bin
+      run: |
+        set -euo pipefail
+        sh "$GITHUB_ACTION_PATH/scripts/install.sh"
+        echo "$PION_INSTALL_DIR" >> "$GITHUB_PATH"
+        if [ -n "$PION_RUSTC_NIGHTLY" ]; then
+          echo "pion-rustc=$PION_INSTALL_DIR/pion-rustc" >> "$GITHUB_OUTPUT"
+        else
+          echo "pion-rustc=" >> "$GITHUB_OUTPUT"
+        fi

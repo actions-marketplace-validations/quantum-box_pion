@@ -55,11 +55,57 @@ checked against real failures yet.
 
 ## Install
 
+### Release binaries
+
+Each release has prebuilt binaries for Linux (x86_64 and aarch64) and macOS
+(Apple silicon), with a `SHA256SUMS` file. The install script verifies every
+download against it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quantum-box/pion/v0.1.0/scripts/install.sh \
+  | PION_VERSION=v0.1.0 sh
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `PION_VERSION` | Release to install, such as `v0.1.0`. Default: `latest` |
+| `PION_INSTALL_DIR` | Where the binaries go. Default: `$CARGO_HOME/bin` |
+| `PION_RUSTC_NIGHTLY` | Also install `pion-rustc` built for this nightly, such as `nightly-2026-06-04` |
+
+`cargo-pion` is a static binary. `pion-rustc` loads the compiler's own
+library, so it exists per nightly toolchain: the ones listed in
+[driver/toolchains.txt](driver/toolchains.txt). For another nightly, add it
+there and release, or build the wrapper from source (see
+[References from the compiler](#references-from-the-compiler-instead-of-an-index)).
+
+### In GitHub Actions
+
+```yaml
+- uses: quantum-box/pion@<commit of the release>  # v0.1.0
+  id: pion
+  with:
+    version: v0.1.0
+    rustc-nightly: nightly-2026-06-04   # omit to install cargo-pion only
+
+# Record references during the check the job runs anyway
+- run: cargo check --workspace --all-targets
+  env:
+    RUSTC_WORKSPACE_WRAPPER: ${{ steps.pion.outputs.pion-rustc }}
+    PION_REFS_DIR: ${{ runner.temp }}/pion-refs
+
+- run: cargo pion plan --base "$BASE_SHA" --refs "$RUNNER_TEMP/pion-refs" --format github-matrix
+```
+
+Pin the action to a commit and `version` to a tag, so that a new release
+cannot change what a workflow runs without a change in the workflow.
+
+### From source
+
 ```bash
 cargo install --git https://github.com/quantum-box/pion cargo-pion
 ```
 
-Narrowing inside crates needs `rust-analyzer` on the `PATH`
+Building an index with `cargo pion index` needs `rust-analyzer` on the `PATH`
 (`rustup component add rust-analyzer`), and `cargo pion run` needs
 [cargo-nextest](https://nexte.st).
 
