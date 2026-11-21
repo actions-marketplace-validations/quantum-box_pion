@@ -473,6 +473,53 @@ impl TestPlan {
         }
     }
 
+    /// The plan as GitHub Actions step outputs, so that one job can plan and
+    /// every later job can read what it needs from `needs.<job>.outputs`:
+    ///
+    /// - `any`: `true` when a test or scenario is selected.
+    /// - `packages`: the selected crates, as a JSON array.
+    /// - `filtersets`: crate -> the nextest filterset for that crate.
+    /// - `filterset`: one filterset for everything; empty when no test is
+    ///   selected.
+    /// - `matrix`: `{"include":[{"package":…,"filterset":…}]}` for
+    ///   `strategy.matrix`.
+    /// - `scenarios`: the selected scenario files, as a JSON array.
+    /// - `uncovered`: changed files no rule covers, as a JSON array.
+    ///
+    /// Each value is on one line.
+    pub fn github_outputs(&self) -> Vec<(&'static str, String)> {
+        let filtersets: BTreeMap<&PackageName, String> = self
+            .crates
+            .iter()
+            .map(|(package, plan)| (package, Self::crate_filterset(package, plan)))
+            .collect();
+        let include: Vec<serde_json::Value> = filtersets
+            .iter()
+            .map(|(package, filterset)| {
+                serde_json::json!({ "package": package, "filterset": filterset })
+            })
+            .collect();
+        let json = |value: serde_json::Value| value.to_string();
+        vec![
+            (
+                "any",
+                (!self.crates.is_empty() || !self.scenarios.is_empty()).to_string(),
+            ),
+            (
+                "packages",
+                json(serde_json::json!(self.crates.keys().collect::<Vec<_>>())),
+            ),
+            ("filtersets", json(serde_json::json!(filtersets))),
+            ("filterset", self.nextest_filterset().unwrap_or_default()),
+            ("matrix", json(serde_json::json!({ "include": include }))),
+            (
+                "scenarios",
+                json(serde_json::json!(self.scenarios.keys().collect::<Vec<_>>())),
+            ),
+            ("uncovered", json(serde_json::json!(self.uncovered))),
+        ]
+    }
+
     /// A nextest filterset that runs exactly the selected tests, or `None`
     /// when no test is selected.
     pub fn nextest_filterset(&self) -> Option<String> {

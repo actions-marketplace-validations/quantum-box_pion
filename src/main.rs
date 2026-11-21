@@ -163,6 +163,9 @@ enum Format {
     GithubMatrix,
     /// The selected scenario files, one per line
     Scenarios,
+    /// `key=value` lines to append to `$GITHUB_OUTPUT`: everything later
+    /// jobs need, from one run of pion
+    GithubOutput,
 }
 
 fn main() -> ExitCode {
@@ -208,6 +211,11 @@ fn plan(args: &PlanArgs) -> Result<ExitCode, Failure> {
                 })
                 .collect();
             say!("{}", serde_json::json!({ "include": include }));
+        }
+        Format::GithubOutput => {
+            for (key, value) in plan.github_outputs() {
+                say!("{key}={value}");
+            }
         }
         Format::Scenarios => {
             for scenario in plan.scenarios.keys() {

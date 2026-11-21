@@ -99,6 +99,9 @@ there and release, or build the wrapper from source (see
 Pin the action to a commit and `version` to a tag, so that a new release
 cannot change what a workflow runs without a change in the workflow.
 
+Run pion once, in a job at the start, and let every other job read its
+outputs. [docs/ci.md](docs/ci.md) shows that layout.
+
 Set `RUSTC_WORKSPACE_WRAPPER` only on the commands that build with the
 nightly the wrapper was made for. It loads that compiler's library and cannot
 start under another toolchain, which makes every cargo command fail,
@@ -220,6 +223,7 @@ run. Use it to see how far a change to a given function spreads.
 | `packages` | The selected crates, one per line |
 | `github-matrix` | `{"include":[{"package":…,"filterset":…}]}` for a GitHub Actions matrix, one job per crate |
 | `scenarios` | The selected scenario files, one per line |
+| `github-output` | `key=value` lines for `$GITHUB_OUTPUT`: everything later jobs need, from one run |
 
 `--deny-uncovered` exits with status 2 when a changed file is covered by no
 rule, for callers that gate a deployment on the plan.

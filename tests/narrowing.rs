@@ -375,3 +375,41 @@ fn a_comment_inserted_between_items_selects_nothing() {
 
     assert!(plan.crates.is_empty());
 }
+
+#[test]
+fn one_plan_gives_every_later_job_its_inputs() {
+    let fixture = Fixture::load();
+    let plan = fixture.plan_edit("core/src/token.rs", "self.age > LIMIT");
+    let outputs: BTreeMap<&str, String> = plan.github_outputs().into_iter().collect();
+
+    assert_eq!(outputs["any"], "true");
+    assert_eq!(outputs["packages"], r#"["fx-auth","fx-core"]"#);
+    assert_eq!(
+        outputs["filtersets"],
+        concat!(
+            r#"{"fx-auth":"(package(=fx-auth) & (test(=tests::rejects_expired_token)))","#,
+            r#""fx-core":"(package(=fx-core) & (test(=token::tests::token_roundtrip)))"}"#
+        )
+    );
+    assert_eq!(
+        outputs["scenarios"],
+        r#"["api/tests/scenarios/sign_in.yaml"]"#
+    );
+    assert_eq!(outputs["uncovered"], "[]");
+    // Step outputs are one line each.
+    assert!(outputs.values().all(|value| !value.contains('\n')));
+}
+
+#[test]
+fn a_plan_that_selects_nothing_says_so() {
+    let fixture = Fixture::load();
+    let changes = ChangeSet::classify([path("docs/guide.md")], &fixture.graph);
+    let plan = Planner::new(&fixture.graph).plan(&changes).expect("plan");
+    let outputs: BTreeMap<&str, String> = plan.github_outputs().into_iter().collect();
+
+    assert_eq!(outputs["any"], "false");
+    assert_eq!(outputs["packages"], "[]");
+    assert_eq!(outputs["filterset"], "");
+    assert_eq!(outputs["matrix"], r#"{"include":[]}"#);
+    assert_eq!(outputs["uncovered"], r#"["docs/guide.md"]"#);
+}
