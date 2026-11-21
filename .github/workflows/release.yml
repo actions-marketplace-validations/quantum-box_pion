@@ -67,7 +67,7 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -107,7 +107,7 @@ jobs:
       fail-fast: false
       matrix:
         toolchain: ${{ fromJSON(needs.prepare.outputs.toolchains) }}
-        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15]
         include:
           # The wrapper loads the compiler's shared library, so it is built
           # for the same target as the toolchain itself.
@@ -115,7 +115,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
