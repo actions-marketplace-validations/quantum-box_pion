@@ -229,14 +229,24 @@ run. Use it to see how far a change to a given function spreads.
 | `json` | The whole plan |
 | `nextest` | A filterset for `cargo nextest run -E` |
 | `packages` | The selected crates, one per line |
-| `github-matrix` | `{"include":[{"package":…,"filterset":…}]}` for a GitHub Actions matrix, one job per crate |
+| `github-matrix` | `{"include":[{"package":…,"filterset":…,"features":[…]}]}` for a GitHub Actions matrix, one job per crate |
 | `scenarios` | The selected scenario files, one per line |
 | `github-output` | `key=value` lines for `$GITHUB_OUTPUT`: everything later jobs need, from one run |
 | `cargo-test` | Arguments for `cargo test`, one invocation per line, for workspaces without nextest |
 
+Some crates are selected with features: a `Cargo.lock` change that reaches
+them only through an optional dependency (see
+[How a change spreads](#how-a-change-spreads)). `text` names the features on
+the crate and the reason, `json` keeps them in each crate's `features`,
+`github-matrix` gives each entry its `features` as `<crate>/<feature>`,
+`github-output` adds a `features` array, and `cargo-test` and `cargo pion run`
+add `--features`. A filterset cannot say how to build, so `nextest` prints
+the features to standard error for you to pass on.
+
 With `cargo-test`, the first line names the crates that run every test, and
 the second the crates that run some, followed by `-- --exact` and the test
-names. Put your own cargo arguments before each line:
+names; either ends its crate list with `--features` when a crate needs some.
+Put your own cargo arguments before each line:
 
 ```bash
 cargo pion plan --base "$BASE" --refs "$REFS" --format cargo-test |
@@ -254,6 +264,17 @@ to one of them. Use it before deploying one binary of a workspace that has
 several: a test of a crate the binary does not contain says nothing about
 that deployment.
 
+What `api` is built from is judged as it ships: with its default features,
+and the features those turn on in its dependencies. An optional dependency
+nothing turns on is not part of the binary. So a `Cargo.lock` change to a
+package `api` does not ship selects nothing, and a crate is selected with a
+feature only when `api`'s build turns that feature on. A crate that is
+selected for another reason, such as a changed file, is selected as before.
+With several `--for-package`, the binaries' features are taken together.
+Without `--for-package`, a lock change selects every crate that some
+feature of its own can build the package with (see
+[How a change spreads](#how-a-change-spreads)).
+
 ```bash
 cargo pion plan --base "$LAST_DEPLOYED" --for-package api --format cargo-test
 ```
@@ -262,8 +283,8 @@ cargo pion plan --base "$LAST_DEPLOYED" --for-package api --format cargo-test
 
 `cargo pion reach` answers a different question from `plan`: does the change
 alter the binary built from this crate? It follows the crate's normal and
-build dependencies only, and leaves out the parts of a crate that are never
-shipped.
+build dependencies only, built with its default features, and leaves out the
+parts of a crate that are never shipped.
 
 ```bash
 cargo pion reach --base "$LAST_DEPLOYED" --package api --package worker --format json
@@ -282,7 +303,7 @@ cargo pion reach --base "$LAST_DEPLOYED" --package api --package worker --format
 | Changed file | Reaches the crate when |
 | --- | --- |
 | A file of a workspace crate | The binary is built from that crate, and the file is not under the crate's `tests/`, `benches/` or `examples/` |
-| `Cargo.lock` | The set of external packages the crate resolves with differs between the two revisions |
+| `Cargo.lock` | The set of external packages the crate resolves with differs between the two revisions, in a package the binary is built with. A package behind an optional dependency the default features leave off does not count; one that is gone from the working tree's dependency graph does |
 | The root `Cargo.toml` | An entry of `[workspace.dependencies]` that differs names a package the binary is built from. A change to anything but that table and the member lists reaches every crate |
 | `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Always |
 | A file no workspace crate owns | Never. It is listed under `outside`, for the caller to match against its own rules (a Dockerfile, a workflow) |
@@ -311,7 +332,7 @@ rule, for callers that gate a deployment on the plan.
 | Changed file | Tests selected |
 | --- | --- |
 | A file inside a crate (`.rs`, `Cargo.toml`, `build.rs`, SQL, fixtures, ...) | That crate, and every workspace crate that depends on it |
-| `Cargo.lock` | The crates that depend on a package the lockfile now resolves differently |
+| `Cargo.lock` | The crates that depend on a package the lockfile now resolves differently. When the way to the package goes through an optional dependency the crate's default features leave off, the crate is selected with the features of its own that turn it on, and a crate none of whose features do is not selected |
 | The root `Cargo.toml` | The crates built from a package whose `[workspace.dependencies]` entry differs. A change to the member lists alone selects nothing; a change to anything else (a profile, a patch, the resolver) selects every crate |
 | `rust-toolchain.toml`, `clippy.toml`, `.cargo/` | Every crate |
 | A file no workspace crate owns | None. The file is listed as not covered |
@@ -319,6 +340,16 @@ rule, for callers that gate a deployment on the plan.
 A crate depends on another when its tests are built from it: through normal
 and build dependencies transitively, and through its own dev-dependencies. A
 dev-dependency does not pass on to the crate's dependents.
+
+`Cargo.lock` lists optional dependencies whatever features are on, so pion
+follows features to tell whether `cargo test -p <crate>` builds a package.
+If it does with the default features, nothing more is needed. If not, pion
+looks for one feature of the crate that turns the package on, taking the one
+that turns on the fewest features in all, and failing that, all its features
+together. A feature forwarded to another workspace crate
+(`evaluation = ["core/evaluation"]`) counts as the crate's own. The plan
+records these features, and the outputs that can say them pass them on as
+`--features <crate>/<feature>`.
 
 ### Inside a crate (`--scip`)
 
